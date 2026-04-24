@@ -1,73 +1,65 @@
-# React + TypeScript + Vite
+# DiraMetrics
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+An Israeli residential real estate data dashboard. Displays data from official sources (Bank of Israel, Central Bureau of Statistics) in a clean, unified interface.
 
-Currently, two official plugins are available:
+🌐 **Live site:** [dirametrics.co.il](https://dirametrics.co.il)
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## What it does
 
-## React Compiler
+Pulls housing and mortgage data from official Israeli government APIs and presents it as interactive charts. Targeted at both professionals in the real estate industry and curious consumers.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Tech stack
 
-## Expanding the ESLint configuration
+- **Frontend:** React + TypeScript + Vite + Recharts
+- **Database:** Supabase (PostgreSQL)
+- **ETL:** Python scripts (fetching SDMX APIs, XLSX parsing)
+- **Hosting:** Vercel (frontend), Supabase (database)
+- **Automation:** GitHub Actions (daily data refresh)
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+## Data sources
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+- [Bank of Israel SDMX API](https://edge.boi.gov.il) — interest rates, mortgage rates
+- [Central Bureau of Statistics](https://www.cbs.gov.il) — housing prices, construction, transactions
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+## Project structure
+dirametrics/
+├── src/              # React frontend
+│   ├── components/   # Chart components
+│   ├── lib/          # Supabase client, utilities
+│   └── App.tsx       # Main app
+├── etl/              # Python data pipelines
+│   ├── fetch_boi_base_rate.py
+│   └── requirements.txt
+├── public/           # Static assets
+└── .github/          # GitHub Actions workflows
+## Running locally
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+### Frontend
+
+```bash
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Requires `.env` with `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`. See `.env.example`.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+### ETL
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+cd etl
+python -m venv .venv
+.venv\Scripts\activate     # Windows
+pip install -r requirements.txt
+python fetch_boi_base_rate.py
 ```
+
+Requires `etl/.env` with `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. See `etl/.env.example`.
+
+## Data disclaimer
+
+All data displayed on this site is sourced from official Israeli government sources and provided "as-is" for informational purposes only. This site does not constitute financial or investment advice. Users should consult qualified professionals before making real estate or financial decisions.
+
+## License
+
+Code: TBD
+Data: Under the respective terms of use of the Bank of Israel and the Israeli Central Bureau of Statistics.
