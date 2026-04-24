@@ -1,0 +1,51 @@
+# Daily ETL: Bank of Israel base interest rate
+#
+# Runs etl/fetch_boi_base_rate.py once per day and upserts fresh
+# observations into Supabase. Idempotent — re-running on the same day
+# is harmless (upsert on `date`).
+#
+# Secrets required (repo Settings → Secrets and variables → Actions):
+#   - SUPABASE_URL
+#   - SUPABASE_SERVICE_ROLE_KEY   (service role, NOT the anon key;
+#                                   needed for writes, bypasses RLS)
+
+name: Daily ETL
+
+on:
+  # 06:00 UTC = 09:00 Israel time (IST, UTC+3 / IDT, UTC+2 in winter).
+  # Runs after BoI's typical morning data publication.
+  # Note: GitHub cron is always UTC — DST shifts the local run time by an hour.
+  schedule:
+    - cron: "0 6 * * *"
+
+  # Allow manual runs from the Actions tab for testing / backfills.
+  workflow_dispatch:
+
+jobs:
+  fetch-and-upsert:
+    runs-on: ubuntu-latest
+
+    # Set timezone so log timestamps are readable in Israel time.
+    env:
+      TZ: Asia/Jerusalem
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          # Cache pip downloads keyed on requirements.txt hash.
+          cache: pip
+          cache-dependency-path: etl/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r etl/requirements.txt
+
+      - name: Run BoI base-rate ETL
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python etl/fetch_boi_base_rate.py
