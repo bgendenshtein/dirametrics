@@ -235,6 +235,55 @@ tolerate more aggressive flakiness; higher (e.g., 0.98) to insist on
 near-perfection. Setting it to 1.0 disables the lenient path entirely
 and reverts to the strict "any missing obs fails the series" behavior.
 
+## Resilience parity between the two CBS scripts
+
+Both `fetch_cbs_series.py` and `fetch_cbs_price_indices.py` ship the
+same HTTP-level resilience layer:
+
+- `_http_get_with_retry()` helper with identical signature and log format
+- Same constants: `HTTP_RETRY_ATTEMPTS = 3`,
+  `HTTP_RETRY_BACKOFF_SEQUENCE = [2, 5, 15]`,
+  `TRANSIENT_HTTP_STATUSES = {500, 502, 503, 504}`,
+  `TRANSIENT_EXCEPTIONS = (ConnectionError, ChunkedEncodingError, Timeout)`
+- Same per-series pagination dedup safeguard (defense-in-depth)
+- Both create a `requests.Session` with a User-Agent header
+
+This is copy-and-adapt parity — extracting the shared helper into a
+common module is a future refactor, deferred to keep this change
+focused.
+
+### What does NOT carry over: gap recovery / lenient acceptance
+
+The price-index script does **not** implement targeted gap-recovery
+(`startperiod`/`endperiod` re-querying), `GAP_RECOVERY_MIN_COVERAGE`,
+or `IncompleteSeriesError`. Reasoning, based on direct probing
+2026-04-25:
+
+| Behavior | Time-series API (`apis.cbs.gov.il`) | Price-index API (`api.cbs.gov.il`) |
+|---|---|---|
+| Pagination determinism | Non-deterministic (one page sometimes returns the full series; cursor drifts when page 1 is short) | Deterministic across 3 successive runs |
+| `paging.total_items` accuracy | Honest — matches what's available | Consistently ~10% higher than what's actually retrievable (e.g., 427 reported vs 385 retrievable for series 40010, 1994-01 → 2026-01 contiguous, no internal gaps; pre-1994 startperiod returns HTTP 500) |
+| Need for gap recovery | YES — observed real interior gaps (e.g., 4 missing months for permits) that get filled by re-query | NO — pagination is reliable; the 42-obs shortfall is a counter quirk, not actual missing data |
+
+If gap recovery were backported as-is, every price-index series would
+read as 90% coverage on every run, fall below the 95% lenient threshold,
+and be raised as `IncompleteSeriesError` — actively breaking the working
+flow. So we keep this script's logic narrow: HTTP retry + dedup, no
+gap-recovery layer.
+
+### `startperiod` / `endperiod` accept both formats on the price-index API
+
+For the record, even though we don't use them in the script:
+
+- The time-series API (`apis.cbs.gov.il/series/`) docs specify
+  `startperiod=MM-YYYY&endperiod=MM-YYYY` (month-first).
+- The price-index API (`api.cbs.gov.il/index/`) accepts **both**
+  `MM-YYYY` and `YYYY-MM` and returns identical results for either.
+
+If we ever need targeted re-fetches on the price-index API (e.g., for
+operational backfill scripts), use `MM-YYYY` for consistency with the
+series API.
+
 ## Series selection — data=1 (original) only
 
 Each leaf in the time-series catalog can have up to three statistical
