@@ -235,6 +235,38 @@ tolerate more aggressive flakiness; higher (e.g., 0.98) to insist on
 near-perfection. Setting it to 1.0 disables the lenient path entirely
 and reverts to the strict "any missing obs fails the series" behavior.
 
+### Lenient gate also covers HTTP errors during gap recovery
+
+The lenient gate originally only handled "couldn't find more data" —
+the case where retry queries returned cleanly but still didn't fill
+the residual gaps. It now also handles "couldn't reach the server for
+the missing data": if `_http_get_with_retry` exhausts its own retries
+during a gap query and propagates an `HTTPError` (5xx) or transient
+exception (`ConnectionError`, `ChunkedEncodingError`, `Timeout`),
+`fetch_series` checks the same coverage gate:
+
+- **Initial coverage ≥ 95%** → log a WARNING (`"gap recovery failed
+  with HTTPError, but initial sweep had X.XX% (>= 95%) — accepting
+  partial data"`), fall through to persist what we have, do not raise.
+  The outer post-loop block then also logs the standard "gap recovery
+  exhausted; persisting partial data" warning so both the cause
+  (server/connection failure) and the outcome (partial coverage) appear
+  in the workflow log.
+- **Initial coverage < 95%** → re-raise the exception as before. The
+  caller in `fetch_topic` catches it via the bare-`Exception` handler,
+  logs it, and adds the series to the failures list.
+
+Non-transient `HTTPError` (4xx, e.g., bad params from a malformed
+gap query) is **always** re-raised regardless of coverage — that
+indicates a real bug we want to surface, not transient flakiness. The
+discriminator is `exc.response.status_code in [400, 500)`: if it's a
+4xx, propagate; otherwise the lenient gate applies.
+
+The semantics are uniform: if we already have most of the data, partial
+is acceptable, regardless of whether the remaining shortfall was
+because the API returned no more data or because the API couldn't be
+reached. Same gate, same threshold, same outcome.
+
 ## Resilience parity between the two CBS scripts
 
 Both `fetch_cbs_series.py` and `fetch_cbs_price_indices.py` ship the

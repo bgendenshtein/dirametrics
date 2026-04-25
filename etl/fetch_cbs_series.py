@@ -428,43 +428,70 @@ def fetch_series(
         return list(rows_by_period.values())
     expected_total = int(expected_total)
 
-    for attempt in range(1, MAX_RETRIES + 1):
-        if len(rows_by_period) >= expected_total:
-            break
-        before = len(rows_by_period)
-        period_dates = sorted(
-            parse_period(tp, frequency) for tp in rows_by_period
-        )
-        gaps = _find_gaps(period_dates, frequency)
-        if gaps:
-            log.warning(
-                "Series %s retry %d/%d: %d unique vs %d expected; %d interior gap(s)",
-                series_id, attempt, MAX_RETRIES,
-                len(rows_by_period), expected_total, len(gaps),
+    try:
+        for attempt in range(1, MAX_RETRIES + 1):
+            if len(rows_by_period) >= expected_total:
+                break
+            before = len(rows_by_period)
+            period_dates = sorted(
+                parse_period(tp, frequency) for tp in rows_by_period
             )
-            for gap_start, gap_end in gaps:
-                log.info(
-                    "  gap %s..%s (%s)",
-                    gap_start.isoformat(), gap_end.isoformat(), frequency,
+            gaps = _find_gaps(period_dates, frequency)
+            if gaps:
+                log.warning(
+                    "Series %s retry %d/%d: %d unique vs %d expected; %d interior gap(s)",
+                    series_id, attempt, MAX_RETRIES,
+                    len(rows_by_period), expected_total, len(gaps),
                 )
-                _fetch_pages(series_id, session, rows_by_period, {
-                    "startperiod": _format_api_filter(gap_start, frequency),
-                    "endperiod":   _format_api_filter(gap_end,   frequency),
-                })
-        else:
-            log.warning(
-                "Series %s retry %d/%d: %d unique vs %d expected; no interior "
-                "gaps detected -- doing a full re-sweep to recover edge gap",
-                series_id, attempt, MAX_RETRIES,
-                len(rows_by_period), expected_total,
-            )
-            _fetch_pages(series_id, session, rows_by_period, None)
+                for gap_start, gap_end in gaps:
+                    log.info(
+                        "  gap %s..%s (%s)",
+                        gap_start.isoformat(), gap_end.isoformat(), frequency,
+                    )
+                    _fetch_pages(series_id, session, rows_by_period, {
+                        "startperiod": _format_api_filter(gap_start, frequency),
+                        "endperiod":   _format_api_filter(gap_end,   frequency),
+                    })
+            else:
+                log.warning(
+                    "Series %s retry %d/%d: %d unique vs %d expected; no interior "
+                    "gaps detected -- doing a full re-sweep to recover edge gap",
+                    series_id, attempt, MAX_RETRIES,
+                    len(rows_by_period), expected_total,
+                )
+                _fetch_pages(series_id, session, rows_by_period, None)
 
-        log.info(
-            "Series %s retry %d: gained %d (total %d/%d)",
-            series_id, attempt,
-            len(rows_by_period) - before, len(rows_by_period), expected_total,
+            log.info(
+                "Series %s retry %d: gained %d (total %d/%d)",
+                series_id, attempt,
+                len(rows_by_period) - before, len(rows_by_period), expected_total,
+            )
+    except requests.exceptions.RequestException as exc:
+        # Gap recovery hit a transient HTTP/connection error that
+        # _http_get_with_retry couldn't recover from. If the initial
+        # sweep was already at >= GAP_RECOVERY_MIN_COVERAGE, treat this
+        # the same as "couldn't fill the gap" — log a WARNING and persist
+        # what we have. Below threshold (or non-transient 4xx) re-raises.
+        is_non_transient_4xx = (
+            isinstance(exc, requests.exceptions.HTTPError)
+            and exc.response is not None
+            and 400 <= exc.response.status_code < 500
         )
+        if is_non_transient_4xx:
+            raise  # real bug (bad params / bad series id) — fail loud
+        initial_coverage = initial_count / expected_total
+        if initial_coverage < GAP_RECOVERY_MIN_COVERAGE:
+            raise  # below threshold — preserve strict behavior
+        final_coverage = len(rows_by_period) / expected_total
+        log.warning(
+            "Series %s: gap recovery failed with %s, but initial sweep had "
+            "%.2f%% (>= %.0f%%) — accepting partial data (final=%.2f%%)",
+            series_id, type(exc).__name__,
+            initial_coverage * 100, GAP_RECOVERY_MIN_COVERAGE * 100,
+            final_coverage * 100,
+        )
+        # Fall through to the post-loop block, which logs the gap detail
+        # and the "exhausted; persisting partial data" summary.
 
     if len(rows_by_period) < expected_total:
         # Recompute residual gaps for diagnostics.
