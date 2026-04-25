@@ -198,6 +198,43 @@ violations. Retrying would silently mask those by waiting for the same
 deterministic failure to "go away" — it won't. Upsert failures abort the
 run loudly so the underlying bug surfaces.
 
+## Lenient gap-recovery acceptance
+
+The CBS API's pagination flakiness (see "Transient-error retry" above
+and the `_find_gaps` machinery in `fetch_series`) sometimes leaves a
+handful of observations stuck even after gap recovery — the targeted
+`startperiod`/`endperiod` queries themselves can also be flaky. For a
+series that already had a near-complete initial sweep, failing the whole
+series for the sake of 1–4 missing observations is overkill: the
+workflow would go red, alerts fire, and re-running the next day usually
+recovers.
+
+`GAP_RECOVERY_MIN_COVERAGE = 0.95` controls the lenient acceptance gate:
+
+- **If initial-sweep coverage ≥ 95%** AND gap recovery still couldn't
+  fill the residual: log a WARNING (`gap recovery exhausted; persisting
+  partial data. initial=N/M (X.XX%), final=N/M (Y.YY%), residual gaps:
+  ...`) and persist what we have. Series is **not** added to the
+  failures list; the workflow exits zero on this account.
+- **If initial-sweep coverage < 95%**: raise `IncompleteSeriesError`
+  with the same diagnostic detail. The series is added to failures and
+  the workflow exits non-zero. Sub-95% on the first sweep usually means
+  something structural is wrong (auth, wrong series ID, deep API
+  outage), so it deserves to fail loudly.
+
+The gate is on the **initial** sweep deliberately, not on the final
+post-retry coverage. This way, a series that started with deep coverage
+problems still fails even if gap recovery happens to claw back 95% of
+the data — that's a "we got lucky" situation we don't want to silently
+accept. Only series that were near-complete from the first try and just
+couldn't squeeze the last few obs through transient flakiness pass
+through.
+
+Tune `GAP_RECOVERY_MIN_COVERAGE` if needed: lower (e.g., 0.90) to
+tolerate more aggressive flakiness; higher (e.g., 0.98) to insist on
+near-perfection. Setting it to 1.0 disables the lenient path entirely
+and reverts to the strict "any missing obs fails the series" behavior.
+
 ## Series selection — data=1 (original) only
 
 Each leaf in the time-series catalog can have up to three statistical

@@ -63,6 +63,15 @@ DEFAULT_TIMEOUT = 60
 MAX_PAGES = 100  # safety cap to avoid runaway pagination loops
 MAX_RETRIES = 3  # gap-recovery attempts after the initial sweep
 
+# Lenient mode for stubborn residual gaps. After the initial paginated
+# sweep, if we collected at least this fraction of `paging.total_items`
+# but gap recovery still couldn't fill the residual, we persist the
+# partial data with a WARNING instead of failing the series. The gate
+# is on the *initial sweep* (not the final post-retry count) so that a
+# series with deep coverage problems still fails loudly — only "near
+# complete but the last few obs are stuck" passes through.
+GAP_RECOVERY_MIN_COVERAGE = 0.95
+
 # Per-request retry on transient HTTP/connection errors. Distinct from
 # MAX_RETRIES (gap recovery) — this layer handles 5xx and dropped
 # connections from a single GET; the gap-recovery layer above handles
@@ -409,9 +418,10 @@ def fetch_series(
     rows_by_period: dict[str, dict] = {}
 
     expected_total = _fetch_pages(series_id, session, rows_by_period, None)
+    initial_count = len(rows_by_period)
     log.info(
         "Series %s initial sweep: %d unique obs, API total_items=%s",
-        series_id, len(rows_by_period), expected_total,
+        series_id, initial_count, expected_total,
     )
 
     if expected_total is None:
@@ -457,8 +467,7 @@ def fetch_series(
         )
 
     if len(rows_by_period) < expected_total:
-        # Recompute residual gaps for the error message — caller can use
-        # them to investigate or hand-craft a follow-up query.
+        # Recompute residual gaps for diagnostics.
         period_dates = sorted(
             parse_period(tp, frequency) for tp in rows_by_period
         )
@@ -466,17 +475,39 @@ def fetch_series(
         gap_summary = ", ".join(
             f"{a.isoformat()}..{b.isoformat()}" for a, b in residual_gaps[:5]
         ) or "no interior gaps (likely edge gap)"
-        raise IncompleteSeriesError(
-            f"series {series_id} ({frequency}): collected "
-            f"{len(rows_by_period)}/{expected_total} obs after {MAX_RETRIES} "
-            f"retries — refusing to upsert incomplete data. "
-            f"Residual gaps: {gap_summary}"
-        )
 
-    log.info(
-        "Series %s: %d obs (complete, matches API total_items)",
-        series_id, len(rows_by_period),
-    )
+        initial_coverage = initial_count / expected_total
+        final_coverage = len(rows_by_period) / expected_total
+
+        if initial_coverage >= GAP_RECOVERY_MIN_COVERAGE:
+            # Lenient acceptance: initial sweep was near-complete; the
+            # missing tail is transient API flakiness, not a structural
+            # problem. Persist what we have, log loudly, but do not fail
+            # the series.
+            log.warning(
+                "Series %s: gap recovery exhausted; persisting partial data. "
+                "initial=%d/%d (%.2f%%), final=%d/%d (%.2f%%), "
+                "min coverage=%.0f%%, residual gaps: %s",
+                series_id,
+                initial_count, expected_total, initial_coverage * 100,
+                len(rows_by_period), expected_total, final_coverage * 100,
+                GAP_RECOVERY_MIN_COVERAGE * 100,
+                gap_summary,
+            )
+        else:
+            raise IncompleteSeriesError(
+                f"series {series_id} ({frequency}): collected "
+                f"{len(rows_by_period)}/{expected_total} obs (initial sweep "
+                f"{initial_count}, {initial_coverage * 100:.2f}%) — below "
+                f"{GAP_RECOVERY_MIN_COVERAGE * 100:.0f}% min coverage threshold "
+                f"after {MAX_RETRIES} gap-recovery retries. "
+                f"Residual gaps: {gap_summary}"
+            )
+    else:
+        log.info(
+            "Series %s: %d obs (complete, matches API total_items)",
+            series_id, len(rows_by_period),
+        )
     # Return in API-style most-recent-first order (preserves the
     # provisional-tail logic in build_rows).
     return sorted(
