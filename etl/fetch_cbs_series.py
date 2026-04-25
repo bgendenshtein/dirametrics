@@ -43,6 +43,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 from collections import defaultdict
 from datetime import date
 from pathlib import Path
@@ -61,6 +62,19 @@ USER_AGENT = "DiraMetrics/1.0 (+bgendenshtein@gmail.com)"
 DEFAULT_TIMEOUT = 60
 MAX_PAGES = 100  # safety cap to avoid runaway pagination loops
 MAX_RETRIES = 3  # gap-recovery attempts after the initial sweep
+
+# Per-request retry on transient HTTP/connection errors. Distinct from
+# MAX_RETRIES (gap recovery) — this layer handles 5xx and dropped
+# connections from a single GET; the gap-recovery layer above handles
+# successful-but-incomplete responses.
+HTTP_RETRY_ATTEMPTS = 3                       # retries after the initial attempt
+HTTP_RETRY_BACKOFF_SEQUENCE = [2, 5, 15]      # seconds between attempts (must align with HTTP_RETRY_ATTEMPTS)
+TRANSIENT_HTTP_STATUSES = {500, 502, 503, 504}
+TRANSIENT_EXCEPTIONS = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.ChunkedEncodingError,
+    requests.exceptions.Timeout,
+)
 
 
 class IncompleteSeriesError(RuntimeError):
@@ -235,6 +249,81 @@ def _find_gaps(
     return gaps
 
 
+def _http_get_with_retry(
+    session: requests.Session,
+    url: str,
+    params: dict,
+    *,
+    series_id: int,
+) -> requests.Response:
+    """GET with retry on transient HTTP/connection errors.
+
+    Retries up to HTTP_RETRY_ATTEMPTS times after the initial attempt
+    (so HTTP_RETRY_ATTEMPTS+1 tries max). Backoff follows
+    HTTP_RETRY_BACKOFF_SEQUENCE — element [i] is the delay before
+    attempt i+1.
+
+    Retried on:
+      - HTTP 500/502/503/504 (TRANSIENT_HTTP_STATUSES)
+      - ConnectionError, ChunkedEncodingError, Timeout
+
+    Non-transient errors (4xx, other 5xx, unexpected exceptions) are
+    raised immediately without retry. On eventual success after one or
+    more retries, logs an INFO line so transient flakiness can be
+    distinguished from clean runs in the workflow logs. On final failure,
+    logs a WARNING with the persistent error before re-raising.
+    """
+    total_tries = HTTP_RETRY_ATTEMPTS + 1
+    for attempt in range(total_tries):
+        is_last = attempt == total_tries - 1
+        try:
+            resp = session.get(url, params=params, timeout=DEFAULT_TIMEOUT)
+        except TRANSIENT_EXCEPTIONS as exc:
+            err = type(exc).__name__
+            if is_last:
+                log.warning(
+                    "Series %s: %s persisted after %d attempts: %s",
+                    series_id, err, total_tries, exc,
+                )
+                raise
+            wait = HTTP_RETRY_BACKOFF_SEQUENCE[attempt]
+            log.warning(
+                "Series %s: %s on attempt %d/%d, retrying in %ds",
+                series_id, err, attempt + 1, total_tries, wait,
+            )
+            time.sleep(wait)
+            continue
+
+        if resp.status_code in TRANSIENT_HTTP_STATUSES:
+            if is_last:
+                log.warning(
+                    "Series %s: HTTP %d persisted after %d attempts",
+                    series_id, resp.status_code, total_tries,
+                )
+                resp.raise_for_status()  # raises HTTPError -> caller surfaces it
+            wait = HTTP_RETRY_BACKOFF_SEQUENCE[attempt]
+            log.warning(
+                "Series %s: HTTP %d on attempt %d/%d, retrying in %ds",
+                series_id, resp.status_code, attempt + 1, total_tries, wait,
+            )
+            time.sleep(wait)
+            continue
+
+        # Non-transient status: success (2xx) or non-retriable error (4xx,
+        # other 5xx). Let raise_for_status decide; only log "succeeded"
+        # if we actually return cleanly.
+        resp.raise_for_status()
+        if attempt > 0:
+            log.info(
+                "Series %s: succeeded after %d retr%s",
+                series_id, attempt, "y" if attempt == 1 else "ies",
+            )
+        return resp
+
+    # Loop should always return or raise above; this is unreachable.
+    raise RuntimeError(f"Series {series_id}: HTTP retry loop exited without return")
+
+
 def _fetch_pages(
     series_id: int,
     session: requests.Session,
@@ -266,8 +355,7 @@ def _fetch_pages(
             series_id, page,
             f" filter={params_extra}" if params_extra else "",
         )
-        resp = session.get(API_BASE, params=params, timeout=DEFAULT_TIMEOUT)
-        resp.raise_for_status()
+        resp = _http_get_with_retry(session, API_BASE, params, series_id=series_id)
         payload = resp.json()
 
         dataset = payload.get("DataSet") or {}

@@ -154,6 +154,50 @@ The price-index API does not have this requirement, but setting a UA there
 costs nothing — consider mirroring the convention if that script ever
 breaks.
 
+## Transient-error retry (HTTP 5xx, dropped connections)
+
+The CBS time-series API has been observed to return transient HTTP 500
+errors mid-run from the GitHub Actions cloud workflow, while the same
+script seconds earlier ran cleanly from a developer laptop. The pattern
+is server-side intermittent flakiness (likely backend overload or
+restart), not a configuration problem on our side.
+
+`_http_get_with_retry()` wraps every `session.get()` in `_fetch_pages`
+with retry-on-transient logic:
+
+- **Retried statuses:** HTTP 500, 502, 503, 504 (`TRANSIENT_HTTP_STATUSES`)
+- **Retried exceptions:** `requests.exceptions.ConnectionError`,
+  `ChunkedEncodingError`, `Timeout` (covers `ReadTimeout` /
+  `ConnectTimeout` via inheritance)
+- **Backoff:** `HTTP_RETRY_BACKOFF_SEQUENCE = [2, 5, 15]` seconds, so
+  4 total tries: initial + 3 retries
+- **4xx and other non-listed 5xx are NOT retried** — those represent
+  real bugs (bad params, bad series ID, etc.) and should fail loudly
+
+Logging is structured so cloud-log skim distinguishes the two cases:
+- *Transient & recovered* — INFO line `"Series N: succeeded after K
+  retr(y/ies)"` after the retry that fixed it
+- *Transient & persistent* — WARNING line `"Series N: HTTP 500
+  persisted after 4 attempts"` (or analogous for connection errors),
+  then the error propagates → caller surfaces it via the failures list
+- *Clean run* — no retry-related output at all
+
+This retry sits **below** the gap-recovery retry layer (`MAX_RETRIES`,
+`_find_gaps`). HTTP retry handles a single failed request; gap recovery
+handles a successful-but-incomplete paginated sweep. They compose:
+worst-case for one series is `MAX_RETRIES × pages × (HTTP_RETRY_ATTEMPTS+1)`
+HTTP calls, but with backoff this stays well under the workflow timeout
+in practice.
+
+### Why upsert is NOT retried
+
+Supabase upsert errors (e.g., the `ON CONFLICT cannot affect row a
+second time` error we hit earlier) indicate real problems in our row
+collection — duplicate keys, schema mismatches, or constraint
+violations. Retrying would silently mask those by waiting for the same
+deterministic failure to "go away" — it won't. Upsert failures abort the
+run loudly so the underlying bug surfaces.
+
 ## Series selection — data=1 (original) only
 
 Each leaf in the time-series catalog can have up to three statistical
