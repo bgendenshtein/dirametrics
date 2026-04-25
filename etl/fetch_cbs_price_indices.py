@@ -5,9 +5,10 @@ Target: Supabase table `cbs_price_indices`
         (series_id, date, value, is_provisional) UNIQUE (series_id, date).
 
 Series fetched (see etl/NOTES_CBS.md for provenance and cross-checks):
-  - 40010  : מדד מחירי דירות (housing prices)
+  - 40010  : מדד מחירי דירות (national housing prices, from 1994)
   - 120460 : מדד שכר דירה (rent — private, public, long-term regulated)
   - 120010 : מדד המחירים לצרכן - כללי (CPI general)
+  - 60000–60500 : housing prices by district (from 2017-10)
 
 Notes on provisionality:
   CBS documents that the 3 most recent values per series are provisional
@@ -41,6 +42,15 @@ SERIES = [
     {"id": 40010,  "name": "מדד מחירי דירות"},
     {"id": 120460, "name": "מדד שכר דירה"},
     {"id": 120010, "name": "מדד המחירים לצרכן - כללי"},
+    # By-district housing price indices (CBS chapter aa, subject 166).
+    # Available from October 2017. Distinct from the national index (40010,
+    # available from 1994) — UI should show this gap as missing data, not zero.
+    {"id": 60000,  "name": "ירושלים"},
+    {"id": 60100,  "name": "צפון"},
+    {"id": 60200,  "name": "חיפה"},
+    {"id": 60300,  "name": "מרכז"},
+    {"id": 60400,  "name": "תל אביב"},
+    {"id": 60500,  "name": "דרום"},
 ]
 
 logging.basicConfig(
