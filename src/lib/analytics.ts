@@ -19,7 +19,7 @@
  * (visible in DevTools Network as 4xx; doesn't break the app).
  */
 
-import { addConsentListener, getConsent } from './consent'
+import { addConsentListener, getConsent, type ConsentState } from './consent'
 
 const MEASUREMENT_ID = 'G-NX5Z6NJBMW'
 
@@ -67,7 +67,7 @@ const initial = getConsent()
 if (initial.status === 'decided' && initial.record.analytics) {
   loadGoogleAnalytics()
 }
-addConsentListener((state) => {
+addConsentListener((state: ConsentState) => {
   if (state.status === 'decided' && state.record.analytics) {
     loadGoogleAnalytics()
   }
