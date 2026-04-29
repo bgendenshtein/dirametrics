@@ -17,6 +17,20 @@ Notes on provisionality:
   false. Upsert on (series_id, date) means re-running the job overwrites
   provisional rows with the latest values (including promoting them to
   non-provisional once they fall out of that series's top-3 window).
+
+Notes on base-period chaining:
+  CBS rebases price indices every ~2 years (e.g. CPI's most recent base
+  is "2024 average = 100"; rent and CPI have rebased ~18 times since
+  1959). The API's `currBase.value` field returns each observation on
+  the base in effect AT OBSERVATION TIME — not chained to today's base.
+  Stored raw, this produces a saw-tooth where January-after-rebase
+  values reset to ~100 and lose comparability with prior values.
+
+  We post-process via chain_to_latest_base, which detects multi-base
+  series dynamically (>1 distinct currBase.baseDesc across history)
+  and rescales older segments so the entire series reads continuously
+  on the latest base. Single-base series like 40010 (housing) pass
+  through unchanged.
 """
 
 from __future__ import annotations
@@ -192,7 +206,9 @@ def fetch_series(series_id: int, session: requests.Session) -> list[dict]:
         page_dups = 0
         for bucket in month_buckets:
             for obs in bucket.get("date", []) or []:
-                value = (obs.get("currBase") or {}).get("value")
+                curr_base = obs.get("currBase") or {}
+                value = curr_base.get("value")
+                base_desc = curr_base.get("baseDesc")
                 year = obs.get("year")
                 month = obs.get("month")
                 if value is None or year is None or month is None:
@@ -203,7 +219,18 @@ def fetch_series(series_id: int, session: requests.Session) -> list[dict]:
                     page_dups += 1
                     continue
                 seen.add(key)
-                rows.append({"year": key[0], "month": key[1], "value": float(value)})
+                rows.append({
+                    "year": key[0],
+                    "month": key[1],
+                    "value": float(value),
+                    # baseDesc is the "currBase" period in effect at
+                    # observation time. CBS rebases CPI/rent every
+                    # ~2 years and the API returns each obs on its
+                    # at-time base, NOT chained — chain_to_latest_base
+                    # post-processes this so the series reads
+                    # continuously across rebases.
+                    "base_desc": base_desc,
+                })
         if page_dups:
             log.info(
                 "Series %s page %d: %d duplicate (year, month) skipped "
@@ -224,6 +251,97 @@ def fetch_series(series_id: int, session: requests.Session) -> list[dict]:
     return rows
 
 
+def chain_to_latest_base(observations: list[dict]) -> list[dict]:
+    """Re-anchor a multi-base index series to the most recent base.
+
+    CBS rebases price indices every ~2 years (most recently to "2024
+    average = 100"). Each obs returns on its AT-TIME base via
+    `currBase`, so a series spanning multiple rebases shows a saw-
+    tooth — values reset to ~100 at every rebase. This pass stitches
+    the segments into one continuous series anchored on the LATEST
+    base (so the most recent observation keeps its native value and
+    historical values are scaled to be comparable).
+
+    Algorithm:
+      1. Sort ascending by (year, month).
+      2. Identify segments where `base_desc` is constant.
+      3. The newest segment is the canonical reference (factor 1.0).
+      4. For each older segment, walking backward, the boundary's
+         chain factor = first_value_of_newer_segment /
+         last_value_of_older_segment. This assumes month-over-month
+         change at the boundary is ≈0; rebases happen at year-start
+         where MoM is small relative to the rebase magnitude, so
+         the residual error is at most ~1pp per chain step. (The
+         API also exposes `percent` per obs which would let us
+         remove this assumption — kept simple here; revisit if a
+         user spots a precision-level discrepancy.)
+      5. Compound: a segment N rebases removed from the newest gets
+         the product of all N boundary factors.
+
+    Single-base series (e.g. housing 40010, which has used the same
+    1993Q2-derived base since 1994) pass through unchanged. Detection
+    is dynamic: any series with > 1 distinct base_desc value is
+    chained; any with ≤ 1 is returned as-is.
+
+    Returns a new list with `value` rescaled. Other fields (year,
+    month, base_desc) are preserved on each obs. The returned list
+    is sorted ascending; callers that need the original most-recent-
+    first order should re-sort.
+    """
+    if len(observations) < 2:
+        return list(observations)
+
+    sorted_obs = sorted(observations, key=lambda o: (o["year"], o["month"]))
+
+    distinct_bases = {o.get("base_desc") for o in sorted_obs if o.get("base_desc")}
+    if len(distinct_bases) <= 1:
+        # Single-base series — no chaining needed. Housing 40010 lives
+        # here, as does any future series CBS doesn't periodically
+        # rebase.
+        return list(sorted_obs)
+
+    # Build segments of constant base_desc
+    segments: list[tuple[int, int, str]] = []
+    seg_start = 0
+    for i in range(1, len(sorted_obs)):
+        if sorted_obs[i].get("base_desc") != sorted_obs[i - 1].get("base_desc"):
+            segments.append((seg_start, i, str(sorted_obs[seg_start].get("base_desc"))))
+            seg_start = i
+    segments.append(
+        (seg_start, len(sorted_obs), str(sorted_obs[seg_start].get("base_desc")))
+    )
+
+    # Per-segment cumulative chain factors. Walk from the newest backward;
+    # each older segment compounds the factors of all newer segments it
+    # has to cross to reach the canonical base.
+    factors: list[float] = [1.0] * len(segments)
+    for k in range(len(segments) - 2, -1, -1):
+        last_old_value = float(sorted_obs[segments[k][1] - 1]["value"])
+        first_new_value = float(sorted_obs[segments[k + 1][0]]["value"])
+        if last_old_value == 0:
+            # Avoid divide-by-zero; pass through unchanged for this
+            # boundary. Should never happen for an index value but
+            # guard anyway.
+            boundary_factor = 1.0
+        else:
+            boundary_factor = first_new_value / last_old_value
+        factors[k] = factors[k + 1] * boundary_factor
+
+    log.info(
+        "Chained %d segments across base periods %s",
+        len(segments),
+        " → ".join(s[2] for s in segments),
+    )
+
+    chained: list[dict] = []
+    for s_idx, (start, end, _) in enumerate(segments):
+        f = factors[s_idx]
+        for i in range(start, end):
+            o = sorted_obs[i]
+            chained.append({**o, "value": float(o["value"]) * f})
+    return chained
+
+
 def to_db_rows(series_id: int, series_name: str, observations: list[dict]) -> list[dict]:
     """Convert API observations to DB rows with is_provisional flags.
 
@@ -231,6 +349,12 @@ def to_db_rows(series_id: int, series_name: str, observations: list[dict]) -> li
     fetch_series). The first PROVISIONAL_TAIL entries are flagged
     provisional. The date is stored as YYYY-MM-01 since the index is
     monthly and the day has no meaning.
+
+    `base_desc` (added to obs by fetch_series for chaining) is dropped
+    here — the DB schema doesn't carry it. The chaining factor has
+    already been applied to `value` by chain_to_latest_base, so the
+    DB row carries continuous-base values without needing to track
+    the underlying base periods.
     """
     db_rows: list[dict] = []
     for idx, obs in enumerate(observations):
@@ -276,7 +400,19 @@ def main() -> int:
         if not observations:
             log.warning("Series %s returned no observations", series["id"])
             continue
-        all_rows.extend(to_db_rows(series["id"], series["name"], observations))
+        # Chain across rebases. Single-base series pass through. The
+        # function logs when it actually chains so the operator sees
+        # which series got rescaled and over how many segments.
+        chained = chain_to_latest_base(observations)
+        # Restore most-recent-first order for to_db_rows's
+        # provisional-tail logic (which expects the most-recent
+        # PROVISIONAL_TAIL entries at indices 0..2).
+        chained_recent_first = sorted(
+            chained, key=lambda o: (o["year"], o["month"]), reverse=True
+        )
+        all_rows.extend(
+            to_db_rows(series["id"], series["name"], chained_recent_first)
+        )
 
     if not all_rows:
         log.warning("No rows to upsert; exiting")
