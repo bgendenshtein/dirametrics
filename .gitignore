@@ -41,3 +41,6 @@ prompt.txt
 replacements.txt
 design/
 docs/*.docx
+
+# Favicon source archive — the extracted icons are committed; the zip isn't
+public/favicon_io.zip
