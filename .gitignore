@@ -36,3 +36,8 @@ __pycache__/
 # Local tooling 
 prompt.txt 
 .claude/
+
+# Personal / pre-implementation
+replacements.txt
+design/
+docs/*.docx

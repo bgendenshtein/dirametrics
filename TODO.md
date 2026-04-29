@@ -12,6 +12,10 @@
 
 - [ ] Resolve CBS new housing price index (series 70000) — API returns HTTP 500. 
   See etl/NOTES_CBS.md for details.
+- [ ] Investigate unexpected drops in CBS rent index (120460) and CPI (120010) series.
+  Visible as "מדד שכר דירה" and "מדד המחירים לצרכן (CPI)" under מחירים כלליים in the
+  series picker. Drops don't match expected behavior — possible data-quality issue
+  in the ETL fetch, the upstream API response, or our handling of provisional values.
 
 ## Deferred decisions
 
