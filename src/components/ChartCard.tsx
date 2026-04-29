@@ -810,8 +810,19 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
         />
       </div>
 
-      {/* 5. Range row */}
-      <div className="chart-control-row chart-control-row--range">
+      {/* 5. Range row — inset to match the brush + chart plot area
+       * so the + הוסף סדרה button on the inline-start and the
+       * preset chips on the inline-end line up vertically with the
+       * brush handles + chart data edges above. Same plotOffsets
+       * source as the brush. Frequency/display rows stay at full
+       * card width for now — visual decision pending. */}
+      <div
+        className="chart-control-row chart-control-row--range"
+        style={{
+          paddingLeft: plotOffsets.left,
+          paddingRight: plotOffsets.right,
+        }}
+      >
         <div className="series-picker-anchor">
           <button
             ref={addBtnRef}
