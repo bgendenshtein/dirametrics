@@ -552,6 +552,19 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
     return getPlotOffsets(dataForLayout, mode)
   }, [realMode, series, filteredSeries, mode])
 
+  // Diagnostic: log plotOffsets whenever they change so we can see
+  // whether the brush misalignment is a calculation issue (logged
+  // values are wrong) or a styling issue (values right but visual
+  // wrong). Remove once verified.
+  useEffect(() => {
+    if (!realMode) return
+    console.log(
+      `[brush plotOffsets] slot=${slotId} mode=${mode} ` +
+        `left=${plotOffsets.left} right=${plotOffsets.right} ` +
+        `series=${series?.length ?? 0}`,
+    )
+  }, [slotId, mode, plotOffsets, series, realMode])
+
   // Accessible name for the chart article. The visible header shows
   // only the meta line, but assistive tech still benefits from a
   // stable label. Use the caller-supplied title when present; fall
@@ -690,9 +703,15 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
       )}
 
       {/* 4. Brush — wrapped to align with the chart's plot area
-       * (insets matching YAxis widths + Recharts horizontal margins). */}
+       * (insets matching YAxis widths + Recharts horizontal margins).
+       * data-* attributes mirror the computed plotOffsets so a quick
+       * DOM inspect reveals whether the math or the styling is the
+       * source of any visible misalignment. Cheap to keep — the
+       * attributes don't affect layout. */}
       <div
         className="chart-brush-align"
+        data-plot-left={plotOffsets.left}
+        data-plot-right={plotOffsets.right}
         style={{
           paddingLeft: plotOffsets.left,
           paddingRight: plotOffsets.right,
