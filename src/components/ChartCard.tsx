@@ -544,7 +544,10 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
   // filteredSeries (which holds the transformed data); for other
   // modes the layout depends only on family info, which is the same
   // pre- and post-transform, so we pass the original series.
-  const plotOffsets = useMemo(() => {
+  // Estimate-based offsets — fast, available immediately on render
+  // before Recharts has actually rendered. Used as a fallback while
+  // measurement settles.
+  const estimatedPlotOffsets = useMemo(() => {
     if (!realMode || !series || series.length === 0) {
       return { left: 0, right: 0 }
     }
@@ -552,18 +555,78 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
     return getPlotOffsets(dataForLayout, mode)
   }, [realMode, series, filteredSeries, mode])
 
-  // Diagnostic: log plotOffsets whenever they change so we can see
-  // whether the brush misalignment is a calculation issue (logged
-  // values are wrong) or a styling issue (values right but visual
-  // wrong). Remove once verified.
+  // Measured offsets — read from the actual rendered DOM after
+  // Recharts has laid out. Recharts' axis widths can differ from
+  // axisWidthFor's estimate (tick labels, internal padding, etc.),
+  // so the only reliable way to align the brush with the plot area
+  // is to measure where Recharts actually drew it.
+  //
+  // The ref attaches to the chart-card <article>; we query
+  // .chart-engine + .recharts-cartesian-grid inside, then compute
+  // grid.left - chartEngine.left for the offset. The chart-engine
+  // and the brush-align div are sibling flex items in the article
+  // so they share the same left edge — measuring the grid relative
+  // to chart-engine yields exactly the inset the brush needs.
+  const cardRef = useRef<HTMLElement>(null)
+  const [measuredPlotOffsets, setMeasuredPlotOffsets] = useState<
+    { left: number; right: number } | null
+  >(null)
+
   useEffect(() => {
-    if (!realMode) return
-    console.log(
-      `[brush plotOffsets] slot=${slotId} mode=${mode} ` +
-        `left=${plotOffsets.left} right=${plotOffsets.right} ` +
-        `series=${series?.length ?? 0}`,
-    )
-  }, [slotId, mode, plotOffsets, series, realMode])
+    const el = cardRef.current
+    if (!el) return
+
+    const measure = () => {
+      const chartEngine = el.querySelector<HTMLElement>('.chart-engine')
+      const grid = el.querySelector<SVGGElement>('.recharts-cartesian-grid')
+      if (!chartEngine || !grid) return
+      const engineRect = chartEngine.getBoundingClientRect()
+      const gridRect = grid.getBoundingClientRect()
+      // Skip during the initial -1×-1 phase — Recharts' first paint
+      // before ResponsiveContainer measures the parent emits a
+      // zero/negative-sized grid. Wait for a real layout.
+      if (gridRect.width <= 0 || engineRect.width <= 0) return
+      const left = Math.max(0, Math.round(gridRect.left - engineRect.left))
+      const right = Math.max(0, Math.round(engineRect.right - gridRect.right))
+      setMeasuredPlotOffsets((prev) => {
+        // Avoid no-op state updates (which would trigger a re-render
+        // → another ResizeObserver call → infinite loop in some
+        // browsers).
+        if (prev && prev.left === left && prev.right === right) return prev
+        return { left, right }
+      })
+    }
+
+    // Measure across the next two animation frames — Recharts
+    // sometimes lays out in two passes (initial render at -1×-1,
+    // then again after ResizeObserver). One frame is usually
+    // enough; two is a safety margin.
+    let raf2 = 0
+    const raf1 = requestAnimationFrame(() => {
+      measure()
+      raf2 = requestAnimationFrame(measure)
+    })
+
+    // Re-measure on size change (window resize, theme toggle reflow,
+    // sibling reflow when display mode changes axis widths).
+    const ro = new ResizeObserver(() => {
+      requestAnimationFrame(measure)
+    })
+    ro.observe(el)
+
+    return () => {
+      cancelAnimationFrame(raf1)
+      cancelAnimationFrame(raf2)
+      ro.disconnect()
+    }
+    // Re-run when chart contents change in ways that affect axis
+    // layout (series add/remove, display mode that changes axis
+    // count, frequency that affects axis labels).
+  }, [series, mode, frequency])
+
+  // Use the measured value once available; fall back to the estimate
+  // for the first paint and any moments before a measurement lands.
+  const plotOffsets = measuredPlotOffsets ?? estimatedPlotOffsets
 
   // Accessible name for the chart article. The visible header shows
   // only the meta line, but assistive tech still benefits from a
@@ -572,7 +635,12 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
   const ariaLabel = title ?? (slotId === 'left' ? 'תרשים שמאלי' : 'תרשים ימני')
 
   return (
-    <article className="chart-card" data-slot={slotId} aria-label={ariaLabel}>
+    <article
+      ref={cardRef}
+      className="chart-card"
+      data-slot={slotId}
+      aria-label={ariaLabel}
+    >
       {/* aria-live region for screen-reader announcements of state
        * changes — series add/remove, filter changes. Visually
        * hidden via .visually-hidden but read aloud politely. */}
@@ -702,16 +770,17 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
         </Suspense>
       )}
 
-      {/* 4. Brush — wrapped to align with the chart's plot area
-       * (insets matching YAxis widths + Recharts horizontal margins).
-       * data-* attributes mirror the computed plotOffsets so a quick
-       * DOM inspect reveals whether the math or the styling is the
-       * source of any visible misalignment. Cheap to keep — the
-       * attributes don't affect layout. */}
+      {/* 4. Brush — wrapped to align with the chart's plot area.
+       * Padding values come from `plotOffsets`, which prefers the
+       * runtime-measured offsets (DOM read of .recharts-cartesian-
+       * grid relative to .chart-engine) and falls back to the
+       * estimated offsets during the first frame before measurement
+       * lands. data-measured surfaces whether the value is from the
+       * fallback (during loading) or measurement (post-paint) — keep
+       * for now while we're confirming alignment in the wild. */}
       <div
         className="chart-brush-align"
-        data-plot-left={plotOffsets.left}
-        data-plot-right={plotOffsets.right}
+        data-measured={measuredPlotOffsets ? 'true' : 'false'}
         style={{
           paddingLeft: plotOffsets.left,
           paddingRight: plotOffsets.right,

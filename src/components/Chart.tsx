@@ -685,7 +685,14 @@ export default function Chart({ series, frequency, displayMode, height }: ChartP
       role="img"
       aria-label={chartAriaLabel}
     >
-      <ResponsiveContainer width="100%" height="100%">
+      {/* width="99%" instead of 100% is the well-known workaround for
+       * Recharts' "width(-1) height(-1)" warning — at 100% it
+       * sometimes measures the parent before flex layout has settled
+       * on a concrete width and emits the warning. The 1% gap is
+       * imperceptible visually and avoids the warning + helps the
+       * plot-area measurement below land on real numbers from the
+       * first frame. */}
+      <ResponsiveContainer width="99%" height="100%">
         <ComposedChart data={rows} margin={RECHARTS_MARGIN}>
           <CartesianGrid
             stroke="var(--color-border-hairline)"
