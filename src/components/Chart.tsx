@@ -120,6 +120,11 @@ export interface ChartSeries {
    * `stackId` prop is forwarded to multiple <Bar> children. Other
    * series types (line, area) ignore this. */
   stackId?: string
+  /** Within-family axis subgroup. Forwarded to chartLayout's
+   * AxisLayoutSeries so planAxesByFamily can split a single family
+   * (e.g. count) onto multiple axes when sales and construction
+   * series are in the same chart. See RegistryLeafEntry.group. */
+  group?: string
 }
 
 /** Default visual type for a series, derived from family + stock flag.

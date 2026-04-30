@@ -409,6 +409,10 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
         // adds via a group registry entry that bundles members
         // sharing a stackId.
         stackId: h.spec.stackId,
+        // Forward the registry's `group` so planAxesByFamily can
+        // split same-family series onto separate axes when their
+        // groups differ (sales vs construction is the canonical case).
+        group: entry?.group,
       }
     })
   }, [realMode, hydrated, theme, typeOverrides, colorSlots])

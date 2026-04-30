@@ -302,6 +302,13 @@ export interface AxisLayoutSeries {
   id: string
   family: SeriesFamily
   data: Array<{ value: number }>
+  /** Within-family axis subgroup. Series sharing a family AND a non-
+   * null group always end up on the same axis (the median-magnitude
+   * heuristic doesn't apply); series in the same family with
+   * different non-null groups always end up on separate axes.
+   * Ungrouped series fall through to the legacy splitByMedian
+   * behavior. See `RegistryLeafEntry.group` for the semantics. */
+  group?: string
 }
 
 /** Per-family Y-axis width in CSS pixels. Tuned to fit the longest
@@ -533,11 +540,24 @@ function planAxesByRange<S extends AxisLayoutSeries>(
   return { axes, axisBySeries }
 }
 
-/** Family-based grouping for values + log modes. Each family bucket
- * is then further split by median magnitude (see splitByMedian + the
- * WITHIN_FAMILY_SPLIT_THRESHOLD constant) so e.g. count-family
- * inventory (~70K) and starts (~13K) get separate axes instead of
- * the smaller series compressing flat against the baseline. */
+/** Family-based grouping for values + log modes. Two stages:
+ *
+ *   1. Split by `group` string. Series in the same family with the
+ *      same explicit group share an axis (registry author's
+ *      declaration that they belong on a single scale). Series with
+ *      different non-null groups in the same family go to different
+ *      axes — sales (~3K) vs construction (~70K) is the canonical
+ *      case: both family='count' but should never share an axis.
+ *
+ *   2. Within each ungrouped family bucket, splitByMedian (the
+ *      WITHIN_FAMILY_SPLIT_THRESHOLD heuristic) still runs as a
+ *      safety net for count-family series whose magnitudes diverge
+ *      enough to warrant separate axes even without an explicit
+ *      group.
+ *
+ * Explicit groups override the median split: registry-declared
+ * grouping is intentional and shouldn't be undone by a magnitude
+ * heuristic. */
 function planAxesByFamily<S extends AxisLayoutSeries>(
   series: S[],
 ): {
@@ -554,7 +574,26 @@ function planAxesByFamily<S extends AxisLayoutSeries>(
   type Group = { family: SeriesFamily; series: S[] }
   const groups: Group[] = []
   for (const [family, list] of byFamily) {
-    for (const sub of splitByMedian(list)) groups.push({ family, series: sub })
+    // Split this family's series by `group` — ungrouped series go
+    // into a single bucket keyed by undefined; each non-null group
+    // string gets its own bucket.
+    const byGroup = new Map<string | undefined, S[]>()
+    for (const s of list) {
+      const sub = byGroup.get(s.group)
+      if (sub) sub.push(s)
+      else byGroup.set(s.group, [s])
+    }
+    for (const [groupKey, subList] of byGroup) {
+      if (groupKey == null) {
+        // Ungrouped: keep the median-magnitude safety net.
+        for (const split of splitByMedian(subList)) {
+          groups.push({ family, series: split })
+        }
+      } else {
+        // Explicit group → single axis, no median split.
+        groups.push({ family, series: subList })
+      }
+    }
   }
 
   // Order groups: largest series count wins primary (right) axis.

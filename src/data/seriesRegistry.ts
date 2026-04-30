@@ -118,6 +118,24 @@ export interface RegistryLeafEntry {
    *     only)
    *   'all' — לאומי + 6 districts available (mirrors cbs_series rows) */
   districts?: 'national-only' | 'all'
+  /** Within-family axis subgroup. Two series in the same `family` and
+   * same `group` always share an axis (overriding the median-magnitude
+   * heuristic in splitByMedian). Two series in the same family with
+   * DIFFERENT non-null groups always get separate axes — registry
+   * author's explicit declaration that the magnitudes shouldn't be
+   * cross-compared on a single scale.
+   *
+   * Examples in this codebase:
+   *   'sales'        — total/free/subsidized/secondhand sales (~3K range)
+   *   'construction' — permits/starts/completions/active/inventory
+   *                    (~13–70K range)
+   * Both are family='count' but should never share an axis: putting
+   * them together flattens the smaller range against the baseline.
+   *
+   * Series without `group` fall back to the family-default bucket and
+   * splitByMedian still runs as a safety net for ungrouped count
+   * series with very different magnitudes. */
+  group?: string
   fetch: (district: District) => Promise<SeriesPoint[]>
 }
 
@@ -277,6 +295,7 @@ export const SERIES_REGISTRY: RegistryEntry[] = [
     precision: 0,
     thousands: true,
     districts: 'all',
+    group: 'construction',
     fetch: (d) => fetchCbsSeries('permits', d),
   },
   {
@@ -289,6 +308,7 @@ export const SERIES_REGISTRY: RegistryEntry[] = [
     precision: 0,
     thousands: true,
     districts: 'all',
+    group: 'construction',
     fetch: (d) => fetchCbsSeries('starts', d),
   },
   {
@@ -301,6 +321,7 @@ export const SERIES_REGISTRY: RegistryEntry[] = [
     precision: 0,
     thousands: true,
     districts: 'all',
+    group: 'construction',
     fetch: (d) => fetchCbsSeries('completions', d),
   },
   {
@@ -315,6 +336,7 @@ export const SERIES_REGISTRY: RegistryEntry[] = [
     precision: 0,
     thousands: true,
     districts: 'all',
+    group: 'construction',
     fetch: (d) => fetchCbsSeries('active', d, 'quarterly'),
   },
 
@@ -329,10 +351,14 @@ export const SERIES_REGISTRY: RegistryEntry[] = [
     precision: 0,
     thousands: true,
     districts: 'all',
+    group: 'sales',
     fetch: (d) => fetchCbsSeries('new_sales_total', d),
   },
   {
     id: 'new-sales-subsidized',
+    // Renamed from 'מכירות מסובסדות' for naming consistency with
+    // the other חדשות-prefixed components — emphasizes that this
+    // is a NEW (not yad-sheni) sales subset.
     name: 'מכירות חדשות מסובסדות',
     category: 'sales',
     family: 'count',
@@ -341,11 +367,14 @@ export const SERIES_REGISTRY: RegistryEntry[] = [
     precision: 0,
     thousands: true,
     districts: 'all',
+    group: 'sales',
     fetch: (d) => fetchCbsSeries('new_sales_subsidized', d),
   },
   {
     id: 'new-sales-free',
-    name: 'מכירות בשוק חופשי',
+    // Renamed from 'מכירות בשוק חופשי' — same rationale as
+    // new-sales-subsidized above.
+    name: 'מכירות חדשות בשוק חופשי',
     category: 'sales',
     family: 'count',
     defaultType: 'bar',
@@ -353,6 +382,7 @@ export const SERIES_REGISTRY: RegistryEntry[] = [
     precision: 0,
     thousands: true,
     districts: 'all',
+    group: 'sales',
     fetch: (d) => fetchCbsSeries('new_sales_free', d),
   },
   {
@@ -365,6 +395,7 @@ export const SERIES_REGISTRY: RegistryEntry[] = [
     precision: 0,
     thousands: true,
     districts: 'all',
+    group: 'sales',
     fetch: (d) => fetchCbsSeries('second_hand_sales', d),
   },
   {
@@ -379,6 +410,11 @@ export const SERIES_REGISTRY: RegistryEntry[] = [
     // CBS publishes inventory national-only; the picker should disable
     // the district selector when this entry is highlighted.
     districts: 'national-only',
+    // Despite living in the 'sales' picker category for discoverability,
+    // inventory is a construction stock measure (~70K range) — share
+    // its axis with permits/starts/completions/active rather than with
+    // the per-period sales flows (~3K range).
+    group: 'construction',
     fetch: () => fetchCbsSeries('new_inventory', 'national'),
   },
 
@@ -537,7 +573,7 @@ export interface SeriesSpec {
  *
  * Format: `${label} - ${district.name}`. DISTRICTS already encodes
  * the "מחוז " prefix in the name field (e.g. "מחוז ירושלים"), so the
- * concatenation reads naturally — "מכירות בשוק חופשי - מחוז ירושלים".
+ * concatenation reads naturally — "מכירות חדשות בשוק חופשי - מחוז ירושלים".
  *
  * The picker DOESN'T use this — it pairs the bare entry name with a
  * separate district selector, where the suffix would just be noise. */
