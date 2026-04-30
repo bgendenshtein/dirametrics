@@ -34,6 +34,8 @@
  *     reads on the LEFT visually inside the RTL parent
  */
 
+import { Link } from 'react-router-dom'
+
 import { Sparkline as SparklineSvg } from './Sparkline'
 import { semanticColor, useResolvedTheme } from '../styles/tokens'
 
@@ -247,14 +249,14 @@ export function KpiCard(props: KpiCardProps) {
       <div className="kpi-card-top">
         <div className="kpi-card-header">
           <span className="kpi-label">{label}</span>
-          <a
-            href={infoHref}
+          <Link
+            to={infoHref}
             className="kpi-info"
             aria-label={`מתודולוגיה: ${label}`}
             title={`מתודולוגיה: ${label}`}
           >
             <span aria-hidden="true">ⓘ</span>
-          </a>
+          </Link>
         </div>
         <span className="kpi-sublabel" title={sublabel}>
           {sublabel}
