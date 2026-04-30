@@ -372,7 +372,13 @@ main[id="main-content"]:focus-visible {
   font-weight: 700;
 }
 .wordmark-he-tail {
-  font-weight: 400;
+  /* Tail weights bumped from 400 to 600: at 400 the tail read as
+   * thin medium against the bold head, dragging the wordmark's
+   * overall weight below the page title. 600 keeps a head/tail
+   * contrast (still lighter than 700) without the whole mark
+   * looking medium-weight. The 0.55 opacity continues to do the
+   * recessive work for the layered design language. */
+  font-weight: 600;
   opacity: 0.55;
 }
 .wordmark-divider {
@@ -383,12 +389,15 @@ main[id="main-content"]:focus-visible {
   align-self: center;
 }
 .wordmark-en {
-  font-weight: 600;
+  /* Bumped from 600 to 700 so the Latin head matches the Hebrew
+   * head's weight — the two halves now read with equal authority
+   * rather than the Latin half receding. */
+  font-weight: 700;
   font-size: 0.78em;
   letter-spacing: 0.01em;
 }
 .wordmark-en-tail {
-  font-weight: 400;
+  font-weight: 600;
   opacity: 0.55;
 }
 
@@ -431,7 +440,7 @@ main[id="main-content"]:focus-visible {
 }
 .page-title h1 {
   margin: 0;
-  font-size: 26px;
+  font-size: 24px;
   font-weight: 600;
   letter-spacing: -0.015em;
   line-height: 1.2;
