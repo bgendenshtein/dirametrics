@@ -50,6 +50,7 @@ import type { ChartSeries, SeriesType } from './Chart'
 import {
   aggregateData,
   defaultAggregation,
+  formatXAxisTick,
   getPlotOffsets,
   transformForMode,
   type DisplayMode,
@@ -78,6 +79,100 @@ const TYPE_CYCLE: SeriesType[] = ['line', 'bar', 'area']
 function nextType(current: SeriesType): SeriesType {
   const i = TYPE_CYCLE.indexOf(current)
   return TYPE_CYCLE[(i + 1) % TYPE_CYCLE.length]
+}
+
+/** CSV-export support. Lives here (module-level) so the helpers don't
+ * recreate on every render. The provisional-flag heuristic mirrors
+ * Chart.tsx's tooltip behavior: at monthly frequency, the last
+ * CSV_TAIL_LENGTH points of any series with more than that many
+ * points are flagged "כן". Other frequencies don't surface a
+ * provisional indicator on screen, so the column is uniformly "לא". */
+const CSV_TAIL_LENGTH = 3
+
+function csvEscape(field: string): string {
+  // Quote when the field contains a separator, quote, or line break.
+  // Embedded quotes are doubled per RFC 4180.
+  if (/[",\r\n]/.test(field)) return `"${field.replace(/"/g, '""')}"`
+  return field
+}
+
+/** Per-cell precision. Native modes (values, log) honor each series's
+ * declared precision so counts stay whole and rates keep two decimals.
+ * Transformed modes (indexed, percent-*) collapse to 1 decimal so the
+ * percent/index column reads consistently regardless of source family. */
+function csvValuePrecision(s: ChartSeries, mode: DisplayMode): number {
+  if (mode === 'values' || mode === 'log') return s.precision ?? 1
+  return 1
+}
+
+function buildChartCsv(
+  series: ChartSeries[],
+  frequency: Frequency,
+  mode: DisplayMode,
+): string {
+  const provisional = new Set<number>()
+  if (frequency === 'monthly') {
+    for (const s of series) {
+      if (s.data.length <= CSV_TAIL_LENGTH) continue
+      for (let i = s.data.length - CSV_TAIL_LENGTH; i < s.data.length; i++) {
+        provisional.add(s.data[i].date.getTime())
+      }
+    }
+  }
+
+  const tsSet = new Set<number>()
+  for (const s of series) for (const p of s.data) tsSet.add(p.date.getTime())
+  const ts = [...tsSet].sort((a, b) => a - b)
+
+  const byTs = series.map((s) => {
+    const m = new Map<number, number>()
+    for (const p of s.data) m.set(p.date.getTime(), p.value)
+    return m
+  })
+
+  const header = ['תאריך', ...series.map((s) => s.name), 'זמני']
+  const lines: string[] = [header.map(csvEscape).join(',')]
+
+  for (const t of ts) {
+    const dateLabel = formatXAxisTick(t, frequency)
+    const cells = byTs.map((m, i) => {
+      const v = m.get(t)
+      if (v == null) return ''
+      return v.toFixed(csvValuePrecision(series[i], mode))
+    })
+    const flag = provisional.has(t) ? 'כן' : 'לא'
+    lines.push([dateLabel, ...cells, flag].map(csvEscape).join(','))
+  }
+
+  // BOM (U+FEFF, the invisible character literal below) so Excel
+  // detects UTF-8 and renders Hebrew correctly; CRLF line endings
+  // per RFC 4180 + best Excel compatibility.
+  return '﻿' + lines.join('\r\n') + '\r\n'
+}
+
+function triggerCsvDownload(filename: string, csv: string): void {
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  // Anchor needs to be in the document for some browsers (Firefox)
+  // to honor the click. Append/remove around the synthetic click; the
+  // DOM is unchanged by the time control returns to the caller.
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  // Defer revoke so the browser has time to start the download before
+  // the object URL is invalidated.
+  setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
+function todayYmd(): string {
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
 }
 
 type Preset = 'max' | '10y' | '5y' | '3y' | '1y'
@@ -572,6 +667,26 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
 
   const allEmpty = filteredSeries.every((s) => s.data.length === 0)
 
+  // CSV download — exports filteredSeries (already aggregated by
+  // frequency and transformed by mode), with the current range, in
+  // the same format the user sees on screen. Defined here so it
+  // closes over the post-pipeline data; the button is disabled
+  // whenever there's nothing meaningful to download.
+  const handleDownload = useCallback(() => {
+    if (filteredSeries.length === 0) return
+    const csv = buildChartCsv(filteredSeries, frequency, mode)
+    triggerCsvDownload(`dirametrics-data-${todayYmd()}.csv`, csv)
+    track('csv_download', {
+      slot: slotId,
+      series_count: filteredSeries.length,
+      frequency,
+      display_mode: mode,
+      date_range_start: range.start.toISOString().slice(0, 10),
+      date_range_end: range.end.toISOString().slice(0, 10),
+    })
+    setLiveAnnouncement('הקובץ הורד')
+  }, [filteredSeries, frequency, mode, range, slotId])
+
   // Brush alignment: pad the brush wrapper so its left/right edges
   // line up with the chart's plot area (inset by YAxis widths +
   // Recharts margins). For percent-period mode the axis layout
@@ -698,6 +813,11 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
           className="chart-icon-btn"
           aria-label="הורדת CSV"
           title="הורדת CSV"
+          onClick={handleDownload}
+          // Disabled whenever there's nothing meaningful to export:
+          // demo mode, no specs, mid-load, error, or all series empty
+          // in the current range.
+          disabled={!realMode || specs.length === 0 || seriesLoading || !!seriesError || allEmpty}
         >
           <DownloadIcon />
         </button>

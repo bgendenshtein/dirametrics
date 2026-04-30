@@ -6,8 +6,12 @@
  * Living outside Chart.tsx keeps the brush-alignment helper out of
  * the lazy Recharts chunk: ChartCard imports `getPlotOffsets` eagerly
  * (so the brush position is right on first render) without forcing
- * Recharts itself into the main bundle.
+ * Recharts itself into the main bundle. `formatXAxisTick` ships from
+ * here for the same reason — ChartCard's CSV export needs it before
+ * the lazy chart bundle has loaded.
  */
+
+import { formatHebrewMonthShortYear } from '../lib/dateRange'
 
 export type SeriesFamily = 'idx' | 'pct' | 'count'
 
@@ -62,6 +66,25 @@ export function isDynamicDomainMode(mode: DisplayMode | undefined): boolean {
  * monthly data; non-monthly frequencies are computed client-side via
  * aggregateData (no extra Supabase queries). */
 export type Frequency = 'monthly' | 'quarterly' | 'semiannual' | 'yearly'
+
+/** Frequency-aware X-axis tick formatter:
+ *   monthly    → "אפר׳ 26"   (Hebrew month abbrev + 2-digit year)
+ *   quarterly  → "Q1 23"      (LTR — quarter number + 2-digit year)
+ *   semiannual → "H1 23"      (LTR — half-year number + 2-digit year)
+ *   yearly     → "2023"       (4-digit year only)
+ *
+ * Quarterly/semi-annual labels are LTR text starting with Q/H. They
+ * render correctly inside the Recharts SVG (which treats axis tick
+ * text as LTR by default) and against the RTL page direction. */
+export function formatXAxisTick(t: number, frequency: Frequency): string {
+  const d = new Date(t)
+  const m = d.getUTCMonth()
+  const y2 = String(d.getUTCFullYear()).slice(-2)
+  if (frequency === 'yearly') return String(d.getUTCFullYear())
+  if (frequency === 'semiannual') return `H${Math.floor(m / 6) + 1} ${y2}`
+  if (frequency === 'quarterly') return `Q${Math.floor(m / 3) + 1} ${y2}`
+  return formatHebrewMonthShortYear(d)
+}
 
 /** How to combine multiple monthly readings into one period:
  *   sum   — flows accumulate (sales/permits/starts/completions)

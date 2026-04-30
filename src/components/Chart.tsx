@@ -47,10 +47,10 @@ import type { TooltipContentProps } from 'recharts'
 
 import { Fragment } from 'react'
 
-import { formatHebrewMonthShortYear } from '../lib/dateRange'
 import {
   RECHARTS_MARGIN,
   axisWidthFor,
+  formatXAxisTick,
   isDynamicDomainMode,
   isPercentMode,
   planAxes,
@@ -258,25 +258,6 @@ function formatTickKM(v: number): string {
   const rounded = Math.round(scaled * 10) / 10
   const text = Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)
   return `${sign}${text}${unit}`
-}
-
-/** Frequency-aware X-axis tick formatter:
- *   monthly    → "אפר׳ 26"   (Hebrew month abbrev + 2-digit year)
- *   quarterly  → "Q1 23"      (LTR — quarter number + 2-digit year)
- *   semiannual → "H1 23"      (LTR — half-year number + 2-digit year)
- *   yearly     → "2023"       (4-digit year only)
- *
- * Quarterly/semi-annual labels are LTR text starting with Q/H. They
- * render correctly inside the Recharts SVG (which treats axis tick
- * text as LTR by default) and against the RTL page direction. */
-function formatXAxisTick(t: number, frequency: Frequency): string {
-  const d = new Date(t)
-  const m = d.getUTCMonth()
-  const y2 = String(d.getUTCFullYear()).slice(-2)
-  if (frequency === 'yearly') return String(d.getUTCFullYear())
-  if (frequency === 'semiannual') return `H${Math.floor(m / 6) + 1} ${y2}`
-  if (frequency === 'quarterly') return `Q${Math.floor(m / 3) + 1} ${y2}`
-  return formatHebrewMonthShortYear(d)
 }
 
 function tickFormatterForFamily(
