@@ -126,11 +126,15 @@ export interface RegistryLeafEntry {
    * cross-compared on a single scale.
    *
    * Examples in this codebase:
-   *   'sales'        — total/free/subsidized/secondhand sales (~3K range)
-   *   'construction' — permits/starts/completions/active/inventory
-   *                    (~13–70K range)
-   * Both are family='count' but should never share an axis: putting
-   * them together flattens the smaller range against the baseline.
+   *   'sales'        — total/free/subsidized/secondhand sales flows
+   *                    (~3K range)
+   *   'construction' — permits/starts/completions flows
+   *                    (~5–22K range)
+   *   'inventory'    — new-inventory stock measure (~50–90K range)
+   * All three are family='count' but each gets its own axis: a flow
+   * and a stock answer different questions, and the magnitudes
+   * differ enough that sharing a scale flattens the smaller series
+   * against the baseline.
    *
    * Series without `group` fall back to the family-default bucket and
    * splitByMedian still runs as a safety net for ungrouped count
@@ -411,10 +415,14 @@ export const SERIES_REGISTRY: RegistryEntry[] = [
     // the district selector when this entry is highlighted.
     districts: 'national-only',
     // Despite living in the 'sales' picker category for discoverability,
-    // inventory is a construction stock measure (~70K range) — share
-    // its axis with permits/starts/completions/active rather than with
-    // the per-period sales flows (~3K range).
-    group: 'construction',
+    // inventory is a stock measure (units sitting unsold at end of
+    // period, ~50–90K range). It needs its own axis separate from
+    // both the per-period sales flows (~3K range) AND the per-period
+    // construction flows (~5–22K range): a stock and a flow shouldn't
+    // share a scale, since they answer different questions ("how much
+    // accumulated" vs "how much per period"). Hence 'inventory' as a
+    // distinct group from 'construction'.
+    group: 'inventory',
     fetch: () => fetchCbsSeries('new_inventory', 'national'),
   },
 
