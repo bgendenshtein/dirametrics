@@ -45,7 +45,7 @@ import {
   rangesEqual,
   type DateRange,
 } from '../lib/dateRange'
-import { seriesColor, useResolvedTheme, type SeriesColorName } from '../styles/tokens'
+import { seriesColorBySlot, useResolvedTheme } from '../styles/tokens'
 import { ApplyPill } from './ApplyPill'
 import { BrushOverview, type BrushDataPoint } from './BrushOverview'
 import type { ChartSeries, SeriesType } from './Chart'
@@ -67,13 +67,6 @@ import { SeriesPicker } from './SeriesPicker'
 const Chart = lazy(() => import('./Chart'))
 
 const CHART_HEIGHT = 400
-// Bumped from 5 to 6 so the מחירים לפי מחוז preset (6 districts) fits.
-const SERIES_CAP = 6
-
-/** Color rotation order for auto-assigned series colors. The first
- * three (blue/red/green) carry the primary signal; amber/violet are
- * fallback for cards with 4–5 series. */
-const COLOR_ROTATION: SeriesColorName[] = ['blue', 'red', 'green', 'amber', 'violet']
 
 /** Cycle order for the per-series type icon: line → bar → area → line.
  * Matches the user-spec sequence exactly. The icon button in each
@@ -342,6 +335,33 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
   // and writes to this map.
   const [typeOverrides, setTypeOverrides] = useState<Record<string, SeriesType>>({})
 
+  // Per-series color slot. Each spec gets a monotonically-increasing
+  // integer slot the first time it appears on the card; the slot
+  // feeds into seriesColorBySlot to produce a stable hue. Slots are
+  // never decremented or recycled — removing a series leaves its slot
+  // entry intact, so removing+re-adding the same spec yields the same
+  // color, and removing one series doesn't shift the colors of the
+  // others (which a position-based scheme would do).
+  //
+  // Lazy useState initializer reads initialSpecs once at mount; the
+  // ref starts at the seeded count so subsequent adds get fresh slots.
+  const [colorSlots, setColorSlots] = useState<Record<string, number>>(() => {
+    const m: Record<string, number> = {}
+    if (initialSpecs) initialSpecs.forEach((s, i) => { m[specKey(s)] = i })
+    return m
+  })
+  const nextSlotRef = useRef(initialSpecs?.length ?? 0)
+  // Helper: idempotently assign a slot for a specKey if it isn't
+  // already mapped. Used by handlePick (single-add) and below by
+  // handleApplyPreset (preset bulk-add).
+  const assignColorSlot = useCallback((k: string) => {
+    setColorSlots((prev) => {
+      if (k in prev) return prev
+      const slot = nextSlotRef.current++
+      return { ...prev, [k]: slot }
+    })
+  }, [])
+
   const hydrated = useSeriesList(realMode ? specs : [])
 
   // Loading: any spec still resolving. Error: surface the first one
@@ -351,15 +371,22 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
   const seriesError = hydrated.find((h) => h.error)?.error ?? null
 
   // Assemble ChartSeries[] from hydrated specs + registry metadata.
-  // Color is auto-assigned by spec position so removing a series
-  // reshuffles colors so the leftmost-added always reads as blue.
-  // typeOverrides wins over the registry default when present.
+  // Color comes from the spec's stable color slot (assigned in
+  // assignColorSlot the first time the spec appeared on the card).
+  // The slot is fed through seriesColorBySlot to produce an HSL
+  // hue — golden-angle distribution so any number of series stay
+  // visually distinct, and stable across remove/re-add of other
+  // series. typeOverrides wins over the registry default when present.
   const series = useMemo<ChartSeries[] | undefined>(() => {
     if (!realMode) return undefined
-    return hydrated.map((h, i) => {
+    return hydrated.map((h) => {
       const entry = getRegistryEntry(h.spec.registryId)
-      const colorName = COLOR_ROTATION[i % COLOR_ROTATION.length]
       const id = specKey(h.spec)
+      // Fallback to slot 0 only if the slot hasn't been assigned yet
+      // (a transient state on the very first render before the
+      // assignColorSlot effect runs). In practice every code path
+      // that adds a spec also calls assignColorSlot synchronously.
+      const slot = colorSlots[id] ?? 0
       return {
         id,
         // displaySeriesName appends the district label when district
@@ -368,7 +395,7 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
         // when the entry has been removed (defensive — shouldn't happen
         // in practice, but useSeriesList might briefly hold a stale id).
         name: displaySeriesName(entry?.name ?? h.spec.registryId, h.spec.district),
-        color: seriesColor(colorName, theme),
+        color: seriesColorBySlot(slot, theme),
         data: h.data.map((p) => ({ date: p.date, value: p.value })),
         family: entry?.family ?? 'count',
         type: typeOverrides[id] ?? entry?.defaultType,
@@ -384,7 +411,7 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
         stackId: h.spec.stackId,
       }
     })
-  }, [realMode, hydrated, theme, typeOverrides])
+  }, [realMode, hydrated, theme, typeOverrides, colorSlots])
 
   // Brush data:
   //   - line visualization → longest series's history (most rows)
@@ -508,7 +535,7 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
     [range, dataExtent],
   )
   const seriesCountForMeta = realMode ? specs.length : defaultSeriesNames.length
-  const meta = `${seriesCountForMeta}/${SERIES_CAP} סדרות · ${formatHebrewDateRange(range)}`
+  const meta = `${seriesCountForMeta} סדרות · ${formatHebrewDateRange(range)}`
 
   // Pill state: at most one pill visible at a time (per the design
   // spec "don't stack"). The id increments on each new pill so React
@@ -605,6 +632,22 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
   const handleApplyPreset = useCallback((preset: ChartPreset) => {
     setSpecs(preset.series)
     setTypeOverrides({})
+    // Assign color slots for any preset members the card hasn't seen
+    // before. Existing slots are preserved (re-applying the same
+    // preset, or applying a preset that overlaps with the current
+    // composition, keeps colors stable).
+    setColorSlots((prev) => {
+      let changed = false
+      const next = { ...prev }
+      for (const s of preset.series) {
+        const k = specKey(s)
+        if (!(k in next)) {
+          next[k] = nextSlotRef.current++
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
     setFrequency(preset.frequency)
     // Display mode: explicit override wins; otherwise null lets the
     // smart-default rules in `mode = storedMode ?? smartDefault`
@@ -639,8 +682,8 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
       handleRemoveSpec(k)
       return
     }
-    if (specs.length >= SERIES_CAP) return
     setSpecs((prev) => [...prev, next])
+    assignColorSlot(k)
     track('series_add', {
       registry_id: next.registryId,
       district: next.district,
@@ -1066,7 +1109,7 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
             onPick={handlePick}
             onApplyPreset={handleApplyPreset}
             alreadyAdded={alreadyAdded}
-            atCap={specs.length >= SERIES_CAP}
+            atCap={false}
           />
         </div>
         <ChipGroup
@@ -1091,17 +1134,11 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
         </div>
       )}
 
-      {/* 6. Frequency row */}
+      {/* 6. Frequency row. Apply-pill slot is the FIRST child so
+       * justify-content: space-between lands the chip group at the
+       * inline-end (visual-left in RTL), matching the time-range
+       * row's chip placement above. */}
       <div className="chart-control-row">
-        <div className="chart-control-group">
-          <span className="chart-control-label">תדירות</span>
-          <ChipGroup
-            ariaLabel="תדירות"
-            value={frequency}
-            onChange={handleFrequency}
-            options={FREQUENCY_OPTIONS}
-          />
-        </div>
         <span className="apply-pill-slot">
           {pill?.change.kind === 'frequency' && (
             <ApplyPill
@@ -1111,19 +1148,20 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
             />
           )}
         </span>
-      </div>
-
-      {/* 7. Display row */}
-      <div className="chart-control-row">
         <div className="chart-control-group">
-          <span className="chart-control-label">תצוגה</span>
+          <span className="chart-control-label">תדירות</span>
           <ChipGroup
-            ariaLabel="תצוגה"
-            value={mode}
-            onChange={handleMode}
-            options={DISPLAY_OPTIONS}
+            ariaLabel="תדירות"
+            value={frequency}
+            onChange={handleFrequency}
+            options={FREQUENCY_OPTIONS}
           />
         </div>
+      </div>
+
+      {/* 7. Display row — same inline-end alignment as the frequency
+       * row (apply-pill first, group last). */}
+      <div className="chart-control-row">
         <span className="apply-pill-slot">
           {pill?.change.kind === 'mode' && (
             <ApplyPill
@@ -1133,6 +1171,15 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
             />
           )}
         </span>
+        <div className="chart-control-group">
+          <span className="chart-control-label">תצוגה</span>
+          <ChipGroup
+            ariaLabel="תצוגה"
+            value={mode}
+            onChange={handleMode}
+            options={DISPLAY_OPTIONS}
+          />
+        </div>
       </div>
     </article>
   )

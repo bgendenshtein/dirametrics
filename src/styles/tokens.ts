@@ -27,29 +27,28 @@ export const accent = {
   blue300: '#93c5fd',
 } as const
 
-export const seriesPalette = {
-  // Light values stepped one Tailwind shade lighter than the original
-  // tokens-spec (blue/red/green from -600 → -500) for chart-series
-  // restraint. Dark values unchanged — they were already tuned for
-  // visibility on dark surfaces. Keep these in sync with the CSS
-  // custom properties in src/index.css.
-  light: {
-    blue:   '#3b82f6',
-    red:    '#ef4444',
-    green:  '#10b981',
-    amber:  '#d97706',
-    violet: '#7c3aed',
-  },
-  dark: {
-    blue:   '#60a5fa',
-    red:    '#f87171',
-    green:  '#34d399',
-    amber:  '#fbbf24',
-    violet: '#a78bfa',
-  },
-} as const
+/** Series color generator. Each chart series is assigned a stable
+ * non-negative integer slot; that slot maps to a hue via the golden
+ * angle (137.508°), which spaces successive hues maximally on the
+ * color wheel for any N. Saturation is fixed at 70%; lightness flips
+ * by theme so colors stay readable on both surfaces (50% in light,
+ * 60% in dark — the same brightness window the previous fixed
+ * palette landed in).
+ *
+ * The starting hue is 220° (brand-blue territory), so the first
+ * series picked feels on-brand; subsequent series fan out through
+ * the spectrum without ever clustering. Slots are monotonic in
+ * ChartCard so removing a series doesn't shift other series'
+ * colors. */
+const HUE_START = 220
+const GOLDEN_ANGLE = 137.508
 
-export type SeriesColorName = keyof typeof seriesPalette.light
+export function seriesColorBySlot(slot: number, theme: Theme): string {
+  const hue = ((HUE_START + slot * GOLDEN_ANGLE) % 360 + 360) % 360
+  const saturation = 70
+  const lightness = theme === 'dark' ? 60 : 50
+  return `hsl(${hue.toFixed(2)}, ${saturation}%, ${lightness}%)`
+}
 
 export const semantic = {
   light: { up: '#047857', down: '#b91c1c' },
@@ -62,11 +61,6 @@ export const motion = {
   longMs:   4000,
   ease:     'cubic-bezier(0.2, 0, 0, 1)',
 } as const
-
-/** Convenience: pick the right series hex for the active theme. */
-export function seriesColor(name: SeriesColorName, theme: Theme): string {
-  return seriesPalette[theme][name]
-}
 
 /** Convenience: pick the right semantic hex (up/down) for the active theme. */
 export function semanticColor(kind: 'up' | 'down', theme: Theme): string {

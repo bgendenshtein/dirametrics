@@ -1344,10 +1344,14 @@ main[id="main-content"]:focus-visible {
    * (second child) at inline-end. */
 }
 
-/* Frequency/display rows wrap label+chips into a group on the right and
- * leave the apply-pill slot on the left edge. The slot has flex: 0 0 auto
- * with no width so it doesn't push elements around when empty; when a
- * pill renders later it'll appear at the inline-end of the row. */
+/* Frequency/display rows wrap label+chips into a group anchored at the
+ * inline-end (visual-left in RTL), matching the time-range chip group's
+ * placement on the row above. The apply-pill slot lives at the inline-
+ * start (visual-right) so the right side of every row reads as the
+ * "actions" column (+ הוסף סדרה button on the range row, mirror-pill
+ * on the frequency/display rows) and the left side reads as the
+ * "controls" column. The slot has flex: 0 0 auto with no width so it
+ * doesn't push elements around when empty. */
 .chart-control-group {
   display: flex;
   align-items: center;
