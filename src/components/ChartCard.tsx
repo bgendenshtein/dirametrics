@@ -1134,16 +1134,24 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
         </div>
       )}
 
-      {/* 6. Frequency row. Apply-pill slot is the FIRST child so
-       * justify-content: space-between lands the chip group at the
-       * inline-end (visual-left in RTL), matching the time-range
-       * row's chip placement above.
+      {/* 6. Frequency row. Children layout under RTL flex with
+       * justify-content: space-between:
        *
-       * paddingLeft/Right mirror the range row above so the row's
-       * content edges line up with the plot area — and so the
-       * apply-pill slot's right edge (CSS-physical right, where the
-       * + הוסף סדרה button sits on the range row) lands on the same
-       * vertical line. Same plotOffsets source as the range row. */}
+       *   [chart-control-group  →  flex-start  =  visual-RIGHT ]
+       *   [apply-pill-slot      →  flex-end    =  visual-LEFT  ]
+       *
+       * Within the group (also RTL flex, default justify-content
+       * flex-start packs both children at the start = right):
+       *
+       *   [ChipGroup chips      →  group's visual-RIGHT  =  row's far-right]
+       *   [label "תדירות"       →  to the left of the chips, gap apart    ]
+       *
+       * Net visual: pill_slot — — — תדירות chip chip chip chip
+       *             (visual-left)                       (visual-right)
+       *
+       * paddingLeft/Right match the range row above so the rightmost
+       * chip's right edge lands on the same vertical line as the
+       * +הוסף סדרה button's right edge. */}
       <div
         className="chart-control-row"
         style={{
@@ -1151,6 +1159,15 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
           paddingRight: plotOffsets.right,
         }}
       >
+        <div className="chart-control-group">
+          <ChipGroup
+            ariaLabel="תדירות"
+            value={frequency}
+            onChange={handleFrequency}
+            options={FREQUENCY_OPTIONS}
+          />
+          <span className="chart-control-label">תדירות</span>
+        </div>
         <span className="apply-pill-slot">
           {pill?.change.kind === 'frequency' && (
             <ApplyPill
@@ -1160,19 +1177,11 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
             />
           )}
         </span>
-        <div className="chart-control-group">
-          <span className="chart-control-label">תדירות</span>
-          <ChipGroup
-            ariaLabel="תדירות"
-            value={frequency}
-            onChange={handleFrequency}
-            options={FREQUENCY_OPTIONS}
-          />
-        </div>
       </div>
 
-      {/* 7. Display row — same inline-end alignment + plot-area
-       * padding as the frequency row above. */}
+      {/* 7. Display row — same layout as frequency row: chip group
+       * on visual-right, label to its visual-left, pill on visual-
+       * far-left. */}
       <div
         className="chart-control-row"
         style={{
@@ -1180,6 +1189,15 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
           paddingRight: plotOffsets.right,
         }}
       >
+        <div className="chart-control-group">
+          <ChipGroup
+            ariaLabel="תצוגה"
+            value={mode}
+            onChange={handleMode}
+            options={DISPLAY_OPTIONS}
+          />
+          <span className="chart-control-label">תצוגה</span>
+        </div>
         <span className="apply-pill-slot">
           {pill?.change.kind === 'mode' && (
             <ApplyPill
@@ -1189,15 +1207,6 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
             />
           )}
         </span>
-        <div className="chart-control-group">
-          <span className="chart-control-label">תצוגה</span>
-          <ChipGroup
-            ariaLabel="תצוגה"
-            value={mode}
-            onChange={handleMode}
-            options={DISPLAY_OPTIONS}
-          />
-        </div>
       </div>
     </article>
   )
