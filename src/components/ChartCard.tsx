@@ -1137,8 +1137,20 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
       {/* 6. Frequency row. Apply-pill slot is the FIRST child so
        * justify-content: space-between lands the chip group at the
        * inline-end (visual-left in RTL), matching the time-range
-       * row's chip placement above. */}
-      <div className="chart-control-row">
+       * row's chip placement above.
+       *
+       * paddingLeft/Right mirror the range row above so the row's
+       * content edges line up with the plot area — and so the
+       * apply-pill slot's right edge (CSS-physical right, where the
+       * + הוסף סדרה button sits on the range row) lands on the same
+       * vertical line. Same plotOffsets source as the range row. */}
+      <div
+        className="chart-control-row"
+        style={{
+          paddingLeft: plotOffsets.left,
+          paddingRight: plotOffsets.right,
+        }}
+      >
         <span className="apply-pill-slot">
           {pill?.change.kind === 'frequency' && (
             <ApplyPill
@@ -1159,9 +1171,15 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
         </div>
       </div>
 
-      {/* 7. Display row — same inline-end alignment as the frequency
-       * row (apply-pill first, group last). */}
-      <div className="chart-control-row">
+      {/* 7. Display row — same inline-end alignment + plot-area
+       * padding as the frequency row above. */}
+      <div
+        className="chart-control-row"
+        style={{
+          paddingLeft: plotOffsets.left,
+          paddingRight: plotOffsets.right,
+        }}
+      >
         <span className="apply-pill-slot">
           {pill?.change.kind === 'mode' && (
             <ApplyPill
