@@ -902,19 +902,50 @@ main[id="main-content"]:focus-visible {
  * user removes the last series via the legend X. Distinct from
  * .chart-empty (which is "all series have no data in current
  * range"); this is "no series at all". The dashed border and
- * centered prompt invite the user to click + הוסף סדרה. */
+ * centered prompt invite the user to click + הוסף סדרה.
+ *
+ * Rendered as a <button> so the whole card opens the picker on
+ * click. The first block resets the native button styles (font,
+ * color, default chrome) so the existing visual treatment carries
+ * through unchanged; subsequent rules add the interactive
+ * affordances (hover, focus-visible, active). */
 .chart-no-series {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: var(--space-3);
+  width: 100%;
   border: 1px dashed var(--color-border-hairline);
   border-radius: var(--radius-md);
   background: var(--color-surface-subtle);
   color: var(--color-text-sub);
   padding: var(--space-12);
   text-align: center;
+  font: inherit;
+  cursor: pointer;
+  /* Border + background lift on hover — keeps the spacious empty
+   * feel but makes the affordance unambiguous. */
+  transition: background-color 0.15s ease, border-color 0.15s ease,
+    color 0.15s ease;
+}
+.chart-no-series:hover {
+  background: var(--color-surface-card);
+  border-color: var(--color-border-input);
+  color: var(--color-text-muted);
+}
+.chart-no-series:hover .chart-no-series-icon {
+  color: var(--color-text-strong);
+  border-color: var(--color-text-muted);
+}
+.chart-no-series:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+}
+.chart-no-series:active {
+  /* Tiny press feedback so the click registers visually without
+   * jumping the layout. */
+  transform: scale(0.997);
 }
 .chart-no-series-icon {
   width: 36px;
@@ -925,6 +956,7 @@ main[id="main-content"]:focus-visible {
   border: 1px dashed var(--color-border-input);
   border-radius: 999px;
   color: var(--color-text-muted);
+  transition: color 0.15s ease, border-color 0.15s ease;
 }
 .chart-no-series-text {
   font-size: var(--type-body-size);

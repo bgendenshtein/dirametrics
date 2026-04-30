@@ -912,7 +912,11 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
       {!realMode ? (
         <PlaceholderChart />
       ) : specs.length === 0 ? (
-        <ChartNoSeries height={CHART_HEIGHT} />
+        <ChartNoSeries
+          height={CHART_HEIGHT}
+          onActivate={() => setPickerOpen((v) => !v)}
+          expanded={pickerOpen}
+        />
       ) : seriesLoading ? (
         <ChartSkeleton height={CHART_HEIGHT} />
       ) : seriesError ? (
@@ -1114,17 +1118,43 @@ function ChartEmpty({ height }: { height: number }) {
 
 /** Empty-of-series state — shown when the user has removed all series.
  * Distinct from ChartEmpty (which is "all series have no data in the
- * current range"); here the chart has no series to plot at all. */
-function ChartNoSeries({ height }: { height: number }) {
+ * current range"); here the chart has no series to plot at all.
+ *
+ * Rendered as a <button> so the entire card is clickable + keyboard-
+ * activatable: tab focus lands on it, Enter/Space fires onClick. The
+ * `data-picker-anchor` attribute opts the element in to the picker's
+ * outside-click suppression, so clicking again toggles cleanly (without
+ * outside-click closing first and the button reopening on the same
+ * pointerup). aria-haspopup + aria-expanded mirror the add-series
+ * button below the chart so screen readers describe the same affordance.
+ */
+function ChartNoSeries({
+  height,
+  onActivate,
+  expanded,
+}: {
+  height: number
+  onActivate: () => void
+  expanded: boolean
+}) {
   return (
-    <div className="chart-no-series" style={{ height }} role="status">
-      <div className="chart-no-series-icon" aria-hidden="true">
+    <button
+      type="button"
+      className="chart-no-series"
+      style={{ height }}
+      onClick={onActivate}
+      data-picker-anchor="true"
+      aria-haspopup="dialog"
+      aria-expanded={expanded}
+      aria-label="הוסף סדרה לתרשים"
+    >
+      <span className="chart-no-series-icon" aria-hidden="true">
         <PlusIcon />
-      </div>
+      </span>
       <span className="chart-no-series-text">
         אין סדרות נתונים בתרשים. לחץ על + הוסף סדרה כדי להתחיל
       </span>
-    </div>
+    </button>
   )
 }
 
