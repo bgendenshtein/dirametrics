@@ -329,7 +329,29 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
   // frequency directly via the chip group — this default doesn't auto-
   // switch on range change.
   const [frequency, setFrequency] = useState<Frequency>('quarterly')
-  const [mode, setMode] = useState<DisplayMode>('values')
+  // Display mode storage: `null` means "no explicit user pick — use
+  // the smart default below." Once the user clicks a mode chip (or
+  // accepts a mirror pill), storedMode flips to a concrete value and
+  // sticks until the chart drops to zero series, at which point we
+  // reset it inside handleRemoveSpec. This implicit-override design
+  // replaces a userOverrodeModeRef + sync-effect pair: the override
+  // bit is "storedMode !== null" and the effective mode is computed
+  // declaratively below — no setState-in-effect, no cascading render.
+  const [storedMode, setStoredMode] = useState<DisplayMode | null>(null)
+  // Effective display mode. When the chart contains 2+ index-family
+  // series, "מותאם 100" (indexed) is the smarter default than raw
+  // values — different index series live on different scales, so the
+  // values view often crushes them. Mixed charts (1 index + others)
+  // and pure non-index charts stay in 'values'. The user's explicit
+  // pick (storedMode) overrides the smart default in either direction.
+  const idxCount = useMemo(
+    () =>
+      series == null
+        ? 0
+        : series.reduce((n, s) => (s.family === 'idx' ? n + 1 : n), 0),
+    [series],
+  )
+  const mode: DisplayMode = storedMode ?? (idxCount >= 2 ? 'indexed' : 'values')
   const [pickerOpen, setPickerOpen] = useState(false)
   const addBtnRef = useRef<HTMLButtonElement>(null)
   // Debounce timer for brush drag → track('range_change'). The brush
@@ -408,7 +430,7 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
   }
 
   const handleMode = (next: DisplayMode) => {
-    setMode(next)
+    setStoredMode(next)
     onUserFilterChange?.({ kind: 'mode', value: next })
     maybeShowPill({ kind: 'mode', value: next })
     track('display_mode_change', { value: next, slot: slotId })
@@ -427,7 +449,13 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
     () => ({
       applyFilterChange(change: FilterChange) {
         if (change.kind === 'frequency') setFrequency(change.value)
-        else if (change.kind === 'mode') setMode(change.value)
+        else if (change.kind === 'mode') {
+          // Mirroring a mode from the other card is itself a deliberate
+          // user act (they clicked the apply pill). Set storedMode so
+          // the smart default doesn't subsequently override what the
+          // user just accepted.
+          setStoredMode(change.value)
+        }
         else if (change.kind === 'preset') {
           setRange(presetToRange(change.value, dataExtent.start, dataExtent.end))
         }
@@ -475,6 +503,7 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
   // previously-cycled override.
   const handleRemoveSpec = (id: string) => {
     const removed = series?.find((s) => s.id === id)
+    const willEmpty = specs.length === 1 && specs[0] && specKey(specs[0]) === id
     setSpecs((prev) => prev.filter((s) => specKey(s) !== id))
     setTypeOverrides((prev) => {
       if (!(id in prev)) return prev
@@ -482,6 +511,12 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
       delete next[id]
       return next
     })
+    // Fresh start: when removing the last spec, clear the user's
+    // stored display-mode pick so the smart default re-engages on
+    // whatever they build next. Anchored to the only path that drains
+    // the chart (legend X, including the picker's toggle-off branch
+    // which routes through here).
+    if (willEmpty) setStoredMode(null)
     track('series_remove', { spec_key: id, slot: slotId })
     if (removed) setLiveAnnouncement(`הסדרה ${removed.name} הוסרה מהתרשים`)
   }
