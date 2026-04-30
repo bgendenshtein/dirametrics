@@ -31,6 +31,7 @@ import {
 } from 'react'
 
 import {
+  displaySeriesName,
   getRegistryEntry,
   specKey,
   type SeriesSpec,
@@ -353,7 +354,12 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
       const id = specKey(h.spec)
       return {
         id,
-        name: entry?.name ?? h.spec.registryId,
+        // displaySeriesName appends the district label when district
+        // != national, so two chips for the same series in different
+        // districts are distinguishable. Falls back to the registry id
+        // when the entry has been removed (defensive — shouldn't happen
+        // in practice, but useSeriesList might briefly hold a stale id).
+        name: displaySeriesName(entry?.name ?? h.spec.registryId, h.spec.district),
         color: seriesColor(colorName, theme),
         data: h.data.map((p) => ({ date: p.date, value: p.value })),
         family: entry?.family ?? 'count',

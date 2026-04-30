@@ -523,6 +523,28 @@ export interface SeriesSpec {
   stackId?: string
 }
 
+/** Display label for a chart series. National / undefined district
+ * uses the bare registry name; non-national district appends the
+ * district label so two chips for the same series in different
+ * districts are distinguishable in the legend, the tooltip, and the
+ * CSV header.
+ *
+ * Format: `${label} - ${district.name}`. DISTRICTS already encodes
+ * the "מחוז " prefix in the name field (e.g. "מחוז ירושלים"), so the
+ * concatenation reads naturally — "מכירות בשוק חופשי - מחוז ירושלים".
+ *
+ * The picker DOESN'T use this — it pairs the bare entry name with a
+ * separate district selector, where the suffix would just be noise. */
+export function displaySeriesName(
+  entryName: string,
+  district: District,
+): string {
+  if (district === 'national') return entryName
+  const d = DISTRICTS.find((x) => x.id === district)
+  if (!d) return entryName
+  return `${entryName} - ${d.name}`
+}
+
 /** String key for spec — used as React key + dedup key in the
  * hydration cache. Excludes stackId so toggling a stacked entry
  * off and back on as standalone uses the same data fetch. */
