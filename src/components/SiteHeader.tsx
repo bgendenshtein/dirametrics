@@ -20,7 +20,7 @@ export function SiteHeader() {
     <header className="hero">
       <div className="hero-row">
         <NavLink to="/" className="hero-wordmark-link" aria-label="DiraMetrics — דף הבית">
-          <Wordmark color="#ffffff" size={18} />
+          <Wordmark color="#ffffff" size={20} />
         </NavLink>
 
         <nav className="hero-nav" aria-label="ניווט ראשי">
