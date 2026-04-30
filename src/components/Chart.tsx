@@ -363,12 +363,20 @@ function formatTooltipForMode(
 }
 
 /** Provisional-tail constants. At monthly frequency, the last
- * TAIL_LENGTH points of each series render as a dashed continuation
- * (line/area) or reduced-opacity (bar). Tooltip dates within any
- * series's tail get a "(זמני)" annotation. The TAIL_SUFFIX marks the
- * dataKey for the tail's render variant — Chart splits each series
- * into a main + tail entry sharing one overlap point so the dashed
- * tail visually continues the solid main line. */
+ * TAIL_LENGTH points of each series are treated as provisional:
+ *   line / area  — split into main + tail entries sharing one
+ *                  overlap point; the tail uses strokeDasharray so
+ *                  the dashed segment continues from the solid line.
+ *                  TAIL_SUFFIX marks the tail entry's dataKey.
+ *   bar          — render uniformly with all other bars (no visual
+ *                  marker). Two earlier visual variants — a stacked
+ *                  second <Bar> and a per-bar `shape` callback —
+ *                  both fought Recharts' bar-layout math (ghost
+ *                  stacking; abnormally narrow bars). The dashed-
+ *                  tail metaphor doesn't translate cleanly to filled
+ *                  rectangles anyway.
+ * Tooltip dates within any series's tail (including bar series) get a
+ * "(זמני)" annotation, which is the sole indicator for bars. */
 const TAIL_LENGTH = 3
 const TAIL_SUFFIX = '__tail'
 
@@ -388,15 +396,23 @@ interface RenderSeries extends ChartSeries {
  *     "last 3" provisional concept doesn't translate).
  *   - Series needs at least TAIL_LENGTH + 1 points to split (so the
  *     main has at least one non-shared point).
- *   - The split point appears in BOTH variants so the dashed tail
- *     visually continues from the solid main line. */
+ *   - Bar series are NEVER split — bars render uniformly. Their
+ *     provisional status is conveyed by the tooltip annotation only;
+ *     see the barProvisional fold into provisionalTimestamps in
+ *     Chart() below.
+ *   - For line/area, the split point appears in BOTH variants so the
+ *     dashed tail visually continues from the solid main line. */
 function expandSeries(
   series: ChartSeries[],
   frequency: Frequency,
 ): RenderSeries[] {
   const out: RenderSeries[] = []
   for (const s of series) {
-    const shouldSplit = frequency === 'monthly' && s.data.length > TAIL_LENGTH
+    const seriesType = s.type ?? defaultTypeFor(s.family, s.isStock)
+    const shouldSplit =
+      seriesType !== 'bar' &&
+      frequency === 'monthly' &&
+      s.data.length > TAIL_LENGTH
     if (!shouldSplit) {
       out.push({ ...s, baseId: s.id })
       continue
@@ -629,13 +645,26 @@ export default function Chart({ series, frequency, displayMode, height }: ChartP
   const seriesById: Record<string, ChartSeries> = {}
   for (const s of series) seriesById[s.id] = s
 
-  // Provisional timestamps: union of every tail entry's data dates.
-  // The tooltip uses this set to mark the date as "(זמני)" for any
-  // hovered point that falls in at least one series's tail.
+  // Provisional timestamps: union of every tail entry's data dates,
+  // plus the last TAIL_LENGTH timestamps of each bar series at
+  // monthly frequency (bars don't produce tail entries — they render
+  // uniformly — but their tooltip should still annotate "(זמני)").
+  // The tooltip uses this set to mark the date for any hovered point
+  // that falls in at least one series's provisional region.
   const provisionalTimestamps = new Set<number>()
   for (const e of entries) {
     if (!e.isTail) continue
     for (const p of e.data) provisionalTimestamps.add(p.date.getTime())
+  }
+  if (frequency === 'monthly') {
+    for (const s of series) {
+      const t = s.type ?? defaultTypeFor(s.family, s.isStock)
+      if (t !== 'bar') continue
+      if (s.data.length <= TAIL_LENGTH) continue
+      for (let i = s.data.length - TAIL_LENGTH; i < s.data.length; i++) {
+        provisionalTimestamps.add(s.data[i].date.getTime())
+      }
+    }
   }
 
   const { axes, axisBySeries } = planAxes(series, displayMode)
@@ -757,13 +786,12 @@ export default function Chart({ series, frequency, displayMode, height }: ChartP
             const yAxisId = axisBySeries[s.baseId]
             const isTail = !!s.isTail
             if (type === 'bar') {
-              // Tail bars de-emphasize via reduced fill (no dash —
-              // dash on a filled rectangle reads as a stroke pattern,
-              // which we don't want). 55%→30% on rest, 75%→50% on
-              // hover, which still differentiates from the surrounding
-              // values without claiming the same visual weight.
-              const fillOpacity = isTail ? 0.30 : 0.55
-              const hoverFillOpacity = isTail ? 0.50 : 0.75
+              // All bars render uniformly. Provisional bars (last
+              // TAIL_LENGTH at monthly frequency) are NOT visually
+              // differentiated — both prior attempts (a stacked
+              // second Bar; a per-bar `shape` callback) collided
+              // with Recharts' bar-layout math. Provisional status
+              // is conveyed via the tooltip "(זמני)" annotation.
               return (
                 <Bar
                   key={s.id}
@@ -771,13 +799,11 @@ export default function Chart({ series, frequency, displayMode, height }: ChartP
                   name={s.name}
                   yAxisId={yAxisId}
                   fill={s.color}
-                  fillOpacity={fillOpacity}
-                  activeBar={{ fillOpacity: hoverFillOpacity }}
+                  fillOpacity={0.55}
+                  activeBar={{ fillOpacity: 0.75 }}
                   // stackId: Recharts groups Bar elements with the
                   // same stackId into a single stacked column.
-                  // Undefined means the bar stands alone. Tail
-                  // variants share the parent's stackId so a stack's
-                  // dashed tail still stacks correctly.
+                  // Undefined means the bar stands alone.
                   stackId={s.stackId}
                   isAnimationActive={false}
                 />
