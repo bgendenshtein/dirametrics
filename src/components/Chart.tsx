@@ -50,6 +50,7 @@ import { Fragment } from 'react'
 import {
   RECHARTS_MARGIN,
   axisWidthFor,
+  effectiveModeFor,
   formatXAxisTick,
   isDynamicDomainMode,
   isPercentMode,
@@ -723,12 +724,17 @@ export default function Chart({ series, frequency, displayMode, height }: ChartP
           />
           {axes.map((a) => {
             const wantsThousands = a.series.some((s) => s.thousands)
-            const { domain, scale } = computeAxisLayout(a.series, displayMode)
-            // In indexed/percent modes the axis is shared across
-            // families, so the tick-label color falls to neutral.
+            // Per-axis effective mode: indexed mode rebases only
+            // idx-family series, so a count axis sitting beside an
+            // idx axis sees `values` here and uses native-units
+            // domain + tick formatting + width. percent and log
+            // pass through unchanged.
+            const axisMode = effectiveModeFor(a.family, displayMode)
+            const { domain, scale } = computeAxisLayout(a.series, axisMode)
             // The mode-aware tick formatter overrides family-based
             // formatting (showing "120" for indexed, "+10%" for
-            // percent) regardless of what families sit on the axis.
+            // percent); for axes whose effective mode is values, we
+            // fall back to family-based formatting via the same helper.
             return (
               <YAxis
                 key={a.axisId}
@@ -740,11 +746,11 @@ export default function Chart({ series, frequency, displayMode, height }: ChartP
                 tick={{ fill: tickColorFor(a.series), fontSize: 11.5 }}
                 tickLine={false}
                 axisLine={false}
-                width={axisWidthFor(a.family, displayMode)}
+                width={axisWidthFor(a.family, axisMode)}
                 tickFormatter={tickFormatterForMode(
                   a.family,
                   wantsThousands,
-                  displayMode,
+                  axisMode,
                 )}
               />
             )

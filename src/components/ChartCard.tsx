@@ -51,6 +51,7 @@ import type { ChartSeries, SeriesType } from './Chart'
 import {
   aggregateData,
   defaultAggregation,
+  effectiveModeFor,
   formatXAxisTick,
   getPlotOffsets,
   transformForMode,
@@ -100,9 +101,14 @@ function csvEscape(field: string): string {
 /** Per-cell precision. Native modes (values, log) honor each series's
  * declared precision so counts stay whole and rates keep two decimals.
  * Transformed modes (indexed, percent-*) collapse to 1 decimal so the
- * percent/index column reads consistently regardless of source family. */
+ * percent/index column reads consistently regardless of source family.
+ *
+ * Uses effectiveModeFor so non-idx series in indexed mode (which
+ * stay in native units — see chartLayout.effectiveModeFor) keep
+ * their declared precision instead of being forced to 1 decimal. */
 function csvValuePrecision(s: ChartSeries, mode: DisplayMode): number {
-  if (mode === 'values' || mode === 'log') return s.precision ?? 1
+  const effective = effectiveModeFor(s.family, mode)
+  if (effective === 'values' || effective === 'log') return s.precision ?? 1
   return 1
 }
 
@@ -666,7 +672,12 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
       )
       const method = s.aggregation ?? defaultAggregation(s.family, s.isStock)
       const aggregated = aggregateData(inRange, frequency, method)
-      const transformed = transformForMode(aggregated, mode)
+      // Per-series effective mode: in indexed mode, count/pct series
+      // pass through unchanged ('values' branch of transformForMode)
+      // so a sales bar series next to two index lines keeps its
+      // 1500–5400 native range instead of getting rebased to 100.
+      const seriesMode = effectiveModeFor(s.family, mode)
+      const transformed = transformForMode(aggregated, seriesMode)
       return { ...s, data: transformed }
     })
   }, [realMode, series, range, frequency, mode])

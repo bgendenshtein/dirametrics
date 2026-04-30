@@ -43,14 +43,45 @@ export function isPercentMode(mode: DisplayMode | undefined): boolean {
 }
 
 /** Modes that collapse all series onto ONE shared axis:
- *   indexed             — values rebased to 100, naturally converge
  *   percent-cumulative  — values rebased to 0%, naturally converge
+ * NOT indexed: indexed only rebases idx-family series (see
+ * effectiveModeFor); count/pct series keep their native units, so
+ * collapsing them onto a single axis would crush the indices and
+ * make the counts unreadable. Indexed therefore uses family-based
+ * grouping like values mode — the idx axis just happens to display
+ * 100-baseline values for its bound series.
  * NOT percent-period: each point is independent of others, so
  * series can have wildly different magnitude ranges (rates → ±2%,
  * sales → ±30%). Period mode uses range-based multi-axis instead
  * (see planAxes). */
 export function isSingleAxisMode(mode: DisplayMode | undefined): boolean {
-  return mode === 'indexed' || mode === 'percent-cumulative'
+  return mode === 'percent-cumulative'
+}
+
+/** Per-axis / per-series mode resolver. Only one mode varies by
+ * family today — `indexed` rebases idx-family values to 100, but
+ * leaves count/pct series in their native units. Asking for the
+ * "effective mode" for a non-idx family in indexed mode returns
+ * `values`, so existing per-mode helpers (transformForMode,
+ * tickFormatterForMode, computeAxisLayout, axisWidthFor) reuse
+ * their `values` paths for those series without special-casing.
+ *
+ * The other modes apply uniformly across all series, so
+ * effectiveModeFor returns `mode` unchanged for them. */
+export function effectiveModeFor(
+  family: SeriesFamily,
+  mode: DisplayMode,
+): DisplayMode
+export function effectiveModeFor(
+  family: SeriesFamily,
+  mode: DisplayMode | undefined,
+): DisplayMode | undefined
+export function effectiveModeFor(
+  family: SeriesFamily,
+  mode: DisplayMode | undefined,
+): DisplayMode | undefined {
+  if (mode === 'indexed' && family !== 'idx') return 'values'
+  return mode
 }
 
 /** Modes with a dynamic Y-axis domain (no zero anchor). The axis
@@ -370,12 +401,16 @@ export interface AxisAssignmentBase<S> {
 }
 
 /** Y-axis width for a given family + display mode. Modes that
- * collapse all series onto a single axis (indexed, both percent
- * variants) override the per-family widths because the axis is
- * no longer family-specific. */
+ * change the tick label format override the family default:
+ *   indexed  — only the idx-family axis is rebased to 100; non-idx
+ *              axes still show native values, so their width follows
+ *              AXIS_WIDTH_BY_FAMILY (the effective mode is 'values'
+ *              for them per effectiveModeFor).
+ *   percent  — both percent variants apply uniformly. */
 export function axisWidthFor(family: SeriesFamily, mode?: DisplayMode): number {
-  if (mode === 'indexed') return 36 // values around 100, max ~3 digits
-  if (isPercentMode(mode)) return 44 // sign + digits + '%' (e.g., "+150%")
+  const effective = effectiveModeFor(family, mode)
+  if (effective === 'indexed') return 36 // values around 100, max ~3 digits
+  if (isPercentMode(effective)) return 44 // sign + digits + '%' (e.g., "+150%")
   return AXIS_WIDTH_BY_FAMILY[family]
 }
 
@@ -385,10 +420,13 @@ export function axisWidthFor(family: SeriesFamily, mode?: DisplayMode): number {
  * Three grouping strategies:
  *
  *   isSingleAxisMode(mode) — all series collapse to one shared axis
- *     on the right. Used by indexed and percent-cumulative, where
- *     transformed values naturally converge to similar magnitudes.
- *     The `family` on the returned axis is a dummy ('idx'); Chart.tsx
- *     picks the tick formatter from mode directly in these modes.
+ *     on the right. Used by percent-cumulative, where every series
+ *     is rebased to 0% and converges. Indexed mode is NOT here: it
+ *     only rebases idx-family series, so the count/pct series need
+ *     their own native-units axes (handled by family-based grouping
+ *     below). The `family` on the returned axis is a dummy ('idx');
+ *     Chart.tsx picks the tick formatter from mode directly in this
+ *     mode.
  *
  *   mode === 'percent-period' — group by computed range. Each series's
  *     range = max(value) - min(value); series whose ranges are within
