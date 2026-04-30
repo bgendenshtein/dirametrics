@@ -175,7 +175,7 @@ async function fetchCbsSeries(
   }))
 }
 
-async function fetchPriceIndex(seriesId: number): Promise<SeriesPoint[]> {
+async function fetchPriceIndex(seriesId: number | string): Promise<SeriesPoint[]> {
   const { data, error } = await supabase
     .from('cbs_price_indices')
     .select('date, value')
@@ -422,6 +422,30 @@ export const SERIES_REGISTRY: RegistryEntry[] = [
     defaultType: 'line',
     precision: 1,
     fetch: () => fetchPriceIndex(120010),
+  },
+  // Real (inflation-adjusted) housing & rent indices, derived in
+  // fetch_cbs_price_indices.py by dividing each nominal month by
+  // the CPI of that month and rebasing to the latest CPI month
+  // ("today's purchasing power"). See docs/methodology.md →
+  // "מדדים ריאליים". Stored under string series_ids — the
+  // cbs_price_indices.series_id column is text and tolerates both.
+  {
+    id: 'cbs-price-housing-real',
+    name: 'מדד מחירי דירות ריאלי',
+    category: 'prices-general',
+    family: 'idx',
+    defaultType: 'line',
+    precision: 1,
+    fetch: () => fetchPriceIndex('40010_real'),
+  },
+  {
+    id: 'cbs-price-rent-real',
+    name: 'מדד מחירי שכירות ריאלי',
+    category: 'prices-general',
+    family: 'idx',
+    defaultType: 'line',
+    precision: 1,
+    fetch: () => fetchPriceIndex('120460_real'),
   },
 
   // 5. מחירים לפי מחוז — one entry per district. Each is its own

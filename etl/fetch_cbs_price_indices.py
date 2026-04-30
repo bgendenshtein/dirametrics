@@ -85,6 +85,19 @@ SERIES = [
     {"id": 60500,  "name": "דרום"},
 ]
 
+# Source ids (from the SERIES table above) used to derive the real
+# (inflation-adjusted) variants. CPI_ID is the deflator; HOUSING and
+# RENT are deflated and stored under string ids (the cbs_price_indices
+# series_id column is text, so int and string ids coexist).
+HOUSING_NOMINAL_ID = 40010
+RENT_NOMINAL_ID = 120460
+CPI_ID = 120010
+
+REAL_HOUSING_ID = "40010_real"
+REAL_HOUSING_NAME = "מדד מחירי דירות ריאלי"
+REAL_RENT_ID = "120460_real"
+REAL_RENT_NAME = "מדד מחירי שכירות ריאלי"
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
@@ -342,7 +355,7 @@ def chain_to_latest_base(observations: list[dict]) -> list[dict]:
     return chained
 
 
-def to_db_rows(series_id: int, series_name: str, observations: list[dict]) -> list[dict]:
+def to_db_rows(series_id: int | str, series_name: str, observations: list[dict]) -> list[dict]:
     """Convert API observations to DB rows with is_provisional flags.
 
     `observations` is expected in most-recent-first order (as returned by
@@ -369,6 +382,79 @@ def to_db_rows(series_id: int, series_name: str, observations: list[dict]) -> li
     return db_rows
 
 
+def compute_real_index(
+    nominal_obs: list[dict],
+    cpi_obs: list[dict],
+    real_id: str,
+    real_name: str,
+) -> list[dict]:
+    """Derive a real (inflation-adjusted) index from a chained nominal
+    series and the chained CPI series.
+
+    For each month present in BOTH series:
+        real[t] = nominal[t] * CPI[latest_cpi_month] / CPI[t]
+
+    which is algebraically: divide the nominal by month-t CPI, scale
+    to 100 → that gives "value relative to CPI at t = 100", then
+    multiply by CPI[latest]/100 to rebase to the latest CPI month so
+    values read in "today's purchasing power." When t = latest_cpi
+    the formula collapses to nominal[t], so the most recent real
+    value matches the most recent nominal value (assuming both
+    series have an observation in the latest CPI month).
+
+    Months where the nominal series has data but CPI does not are
+    skipped (no overlap → no deflation possible). The reverse
+    direction is irrelevant — the real series is constrained by the
+    nominal series's range; CPI extends further back than housing.
+
+    Returns DB rows ready for upsert. Empty list if either input is
+    empty (logged so the operator notices).
+    """
+    if not nominal_obs or not cpi_obs:
+        log.warning(
+            "Series %s: missing input — nominal=%d cpi=%d. Skipping.",
+            real_id, len(nominal_obs), len(cpi_obs),
+        )
+        return []
+
+    cpi_by_ym = {(o["year"], o["month"]): float(o["value"]) for o in cpi_obs}
+    cpi_latest_ym = max(cpi_by_ym)
+    cpi_latest = cpi_by_ym[cpi_latest_ym]
+
+    real_obs: list[dict] = []
+    skipped = 0
+    for o in nominal_obs:
+        ym = (o["year"], o["month"])
+        cpi_v = cpi_by_ym.get(ym)
+        if cpi_v is None or cpi_v == 0:
+            skipped += 1
+            continue
+        real_obs.append({
+            "year": ym[0],
+            "month": ym[1],
+            "value": float(o["value"]) * cpi_latest / cpi_v,
+            # base_desc is preserved through chain_to_latest_base for
+            # raw API series; the derived real series has no upstream
+            # base description, so leave it None — to_db_rows ignores
+            # it anyway.
+            "base_desc": None,
+        })
+    if skipped:
+        log.info(
+            "Series %s: %d nominal months skipped (no CPI overlap)",
+            real_id, skipped,
+        )
+
+    real_recent_first = sorted(
+        real_obs, key=lambda o: (o["year"], o["month"]), reverse=True
+    )
+    log.info(
+        "Series %s: %d months computed, anchored to CPI %04d-%02d (=%.2f)",
+        real_id, len(real_recent_first), cpi_latest_ym[0], cpi_latest_ym[1], cpi_latest,
+    )
+    return to_db_rows(real_id, real_name, real_recent_first)
+
+
 def upsert_rows(client: Client, rows: list[dict]) -> int:
     """Upsert rows on (series_id, date). Returns count of rows sent."""
     sent = 0
@@ -391,6 +477,11 @@ def main() -> int:
 
     session = make_session()
     all_rows: list[dict] = []
+    # Chained nominal observations keyed by source id (ascending order
+    # — preserved as-returned by chain_to_latest_base). compute_real_index
+    # consumes these after the per-series fetch loop. Capturing here
+    # avoids re-fetching the same upstream series twice.
+    chained_by_id: dict[int, list[dict]] = {}
     for series in SERIES:
         try:
             observations = fetch_series(series["id"], session)
@@ -404,6 +495,7 @@ def main() -> int:
         # function logs when it actually chains so the operator sees
         # which series got rescaled and over how many segments.
         chained = chain_to_latest_base(observations)
+        chained_by_id[series["id"]] = chained
         # Restore most-recent-first order for to_db_rows's
         # provisional-tail logic (which expects the most-recent
         # PROVISIONAL_TAIL entries at indices 0..2).
@@ -413,6 +505,26 @@ def main() -> int:
         all_rows.extend(
             to_db_rows(series["id"], series["name"], chained_recent_first)
         )
+
+    # Derive real (inflation-adjusted) housing & rent indices from the
+    # chained nominal series + CPI. See compute_real_index docstring
+    # for the formula. Uses chained values (not raw API values) so the
+    # deflation operates on a continuous-base nominal series — without
+    # this, rebase-boundary saw-teeth in the input would propagate
+    # into the real series.
+    cpi_chained = chained_by_id.get(CPI_ID, [])
+    all_rows.extend(compute_real_index(
+        chained_by_id.get(HOUSING_NOMINAL_ID, []),
+        cpi_chained,
+        REAL_HOUSING_ID,
+        REAL_HOUSING_NAME,
+    ))
+    all_rows.extend(compute_real_index(
+        chained_by_id.get(RENT_NOMINAL_ID, []),
+        cpi_chained,
+        REAL_RENT_ID,
+        REAL_RENT_NAME,
+    ))
 
     if not all_rows:
         log.warning("No rows to upsert; exiting")
@@ -425,7 +537,11 @@ def main() -> int:
         log.exception("Upsert failed: %s", exc)
         return 1
 
-    log.info("Done. Upserted %d rows into %s across %d series", sent, TABLE, len(SERIES))
+    distinct_series = {r["series_id"] for r in all_rows}
+    log.info(
+        "Done. Upserted %d rows into %s across %d series (%d fetched + %d derived)",
+        sent, TABLE, len(distinct_series), len(SERIES), len(distinct_series) - len(SERIES),
+    )
     return 0
 
 
