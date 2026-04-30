@@ -1777,6 +1777,38 @@ main[id="main-content"]:focus-visible {
   color: var(--color-text-sub);
 }
 
+/* Preset rows: same hit area + hover behavior as regular series
+ * entries, with a leading chart glyph and a slightly stronger font
+ * to signal "this is a complete view, not a single series." The
+ * inline-end accent bar is a subtle vertical stripe in brand-blue
+ * — visible without dominating, and theme-aware via opacity. */
+.series-picker-preset {
+  font-weight: 500;
+  position: relative;
+}
+.series-picker-preset::before {
+  content: '';
+  position: absolute;
+  inset-inline-end: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  background: var(--color-accent-blue-500);
+  opacity: 0.55;
+  border-radius: 2px;
+}
+.series-picker-preset-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  color: var(--color-text-sub);
+  /* Keep the glyph visually balanced with the row's text — small
+   * margin-end so it doesn't crowd the name. */
+  margin-inline-end: 4px;
+}
+.series-picker-preset:hover:not(:disabled) .series-picker-preset-icon {
+  color: var(--color-text-strong);
+}
+
 .series-picker-empty {
   padding: 16px 12px;
   text-align: center;

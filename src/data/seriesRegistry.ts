@@ -17,6 +17,7 @@
  * UI tree.
  */
 
+import type { DisplayMode, Frequency } from '../components/chartLayout'
 import { supabase } from '../lib/supabase'
 
 export type District =
@@ -52,6 +53,7 @@ const DISTRICT_DB_KEY: Record<District, string> = {
 }
 
 export type CategoryId =
+  | 'presets'
   | 'rates'
   | 'construction'
   | 'sales'
@@ -71,6 +73,10 @@ export interface Category {
 }
 
 export const CATEGORIES: Category[] = [
+  // Presets render as the FIRST category — clicking a preset row
+  // replaces the chart's series + filters in one action. Distinct
+  // rendering path in SeriesPicker (see PRESETS below).
+  { id: 'presets',            name: 'תצוגות מומלצות',     hasDistrictSelector: false },
   { id: 'rates',              name: 'ריביות',           hasDistrictSelector: false },
   { id: 'construction',       name: 'בנייה',            hasDistrictSelector: true  },
   { id: 'sales',              name: 'מכירות',           hasDistrictSelector: true  },
@@ -558,3 +564,109 @@ export function specKey(spec: SeriesSpec): string {
 export function getRegistryEntry(id: string): RegistryLeafEntry | undefined {
   return getLeafEntry(id)
 }
+
+/** A chart preset: a complete view (series list + frequency + range
+ * + optional display mode) the user can apply with one click in the
+ * picker. Replaces the chart's existing series rather than adding to
+ * them. The rangePreset literal is structurally compatible with
+ * ChartCard's local Preset type so it threads into presetToRange
+ * without conversion.
+ *
+ * Display mode left undefined → smart-default rules apply (the chart
+ * picks 'indexed' when 2+ idx series, otherwise 'values'). Set
+ * explicitly to override. */
+export interface ChartPreset {
+  id: string
+  name: string
+  series: SeriesSpec[]
+  frequency: Frequency
+  rangePreset: 'max' | '10y' | '5y' | '3y' | '1y'
+  displayMode?: DisplayMode
+}
+
+/** The 6 curated views surfaced under the תצוגות מומלצות category in
+ * the picker. Order = display order in the picker. Each preset's
+ * series array is what the chart will be replaced with; member
+ * stackIds opt those series into stacked-bar rendering exactly as
+ * the existing 'group' registry entries do.
+ *
+ * Adding a preset: pick a stable id (used for analytics), give it
+ * a Hebrew name, list the registry-id + district pairs, and set
+ * frequency / rangePreset to whatever cadence + window the view
+ * reads best at. */
+export const PRESETS: ChartPreset[] = [
+  {
+    id: 'rates',
+    name: 'ריביות',
+    frequency: 'monthly',
+    rangePreset: '3y',
+    series: [
+      { registryId: 'boi-base-rate',              district: 'national' },
+      { registryId: 'mortgage-fixed-indexed',     district: 'national' },
+      { registryId: 'mortgage-fixed-unindexed',   district: 'national' },
+    ],
+  },
+  {
+    id: 'sales',
+    name: 'מכירות',
+    frequency: 'quarterly',
+    rangePreset: '5y',
+    series: [
+      // Stacked: subsidized + free render as one column.
+      { registryId: 'new-sales-subsidized', district: 'national', stackId: 'preset-sales-stack' },
+      { registryId: 'new-sales-free',       district: 'national', stackId: 'preset-sales-stack' },
+      { registryId: 'second-hand-sales',    district: 'national' },
+      { registryId: 'new-inventory',        district: 'national' },
+    ],
+  },
+  {
+    id: 'construction',
+    name: 'בנייה',
+    frequency: 'semiannual',
+    rangePreset: '5y',
+    series: [
+      { registryId: 'permits',     district: 'national' },
+      { registryId: 'starts',      district: 'national' },
+      { registryId: 'completions', district: 'national' },
+    ],
+  },
+  {
+    id: 'sales-and-construction',
+    name: 'מכירות ובנייה',
+    frequency: 'semiannual',
+    rangePreset: '5y',
+    series: [
+      { registryId: 'completions',      district: 'national' },
+      { registryId: 'new-sales-total',  district: 'national' },
+      { registryId: 'new-inventory',    district: 'national' },
+    ],
+  },
+  {
+    id: 'prices',
+    name: 'מחירים',
+    frequency: 'quarterly',
+    rangePreset: '5y',
+    series: [
+      { registryId: 'cbs-price-housing-real', district: 'national' },
+      { registryId: 'cbs-price-rent-real',    district: 'national' },
+      // Sales-total alongside the price indices: provides a volume
+      // counterpoint to the price trend in the same view.
+      { registryId: 'new-sales-total',        district: 'national' },
+    ],
+  },
+  {
+    id: 'prices-by-district',
+    name: 'מחירים לפי מחוז',
+    frequency: 'quarterly',
+    rangePreset: '5y',
+    // 6 series — this preset is the reason SERIES_CAP went from 5 to 6.
+    series: [
+      { registryId: 'cbs-price-housing-jerusalem', district: 'national' },
+      { registryId: 'cbs-price-housing-haifa',     district: 'national' },
+      { registryId: 'cbs-price-housing-center',    district: 'national' },
+      { registryId: 'cbs-price-housing-north',     district: 'national' },
+      { registryId: 'cbs-price-housing-south',     district: 'national' },
+      { registryId: 'cbs-price-housing-tel-aviv',  district: 'national' },
+    ],
+  },
+]

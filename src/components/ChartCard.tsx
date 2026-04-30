@@ -34,6 +34,7 @@ import {
   displaySeriesName,
   getRegistryEntry,
   specKey,
+  type ChartPreset,
   type SeriesSpec,
 } from '../data/seriesRegistry'
 import { useSeriesList } from '../hooks/useSeriesList'
@@ -66,7 +67,8 @@ import { SeriesPicker } from './SeriesPicker'
 const Chart = lazy(() => import('./Chart'))
 
 const CHART_HEIGHT = 400
-const SERIES_CAP = 5
+// Bumped from 5 to 6 so the מחירים לפי מחוז preset (6 districts) fits.
+const SERIES_CAP = 6
 
 /** Color rotation order for auto-assigned series colors. The first
  * three (blue/red/green) carry the primary signal; amber/violet are
@@ -486,6 +488,21 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
     setRange(presetToRange('5y', dataExtent.start, dataExtent.end))
   }, [brushData, dataExtent])
 
+  // Pending preset range — set by handleApplyPreset when the chart
+  // currently has no real data (so the immediate range snap inside
+  // the handler would compute against synthetic dataExtent and be
+  // wrong). Once new data lands and dataExtent updates, this effect
+  // re-snaps the range to the preset's intended window. Cleared on
+  // success so it doesn't fire again on subsequent series changes.
+  const pendingPresetRangeRef = useRef<ChartPreset['rangePreset'] | null>(null)
+  useEffect(() => {
+    if (pendingPresetRangeRef.current == null) return
+    if (brushData === SYNTHETIC_BRUSH_DATA) return
+    const r = pendingPresetRangeRef.current
+    pendingPresetRangeRef.current = null
+    setRange(presetToRange(r, dataExtent.start, dataExtent.end))
+  }, [brushData, dataExtent])
+
   const activePreset = useMemo(
     () => activePresetFor(range, dataExtent.start, dataExtent.end),
     [range, dataExtent],
@@ -579,6 +596,37 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
   const handlePillDismiss = useCallback(() => {
     setPill(null)
   }, [])
+
+  // Apply a complete preset — replaces specs, sets frequency, snaps
+  // range, and (optionally) sets display mode. typeOverrides are
+  // cleared so a preset starts from each member's registry default
+  // rather than carrying over chip-cycled types from the previous
+  // composition. The picker closes on its own (caller).
+  const handleApplyPreset = useCallback((preset: ChartPreset) => {
+    setSpecs(preset.series)
+    setTypeOverrides({})
+    setFrequency(preset.frequency)
+    // Display mode: explicit override wins; otherwise null lets the
+    // smart-default rules in `mode = storedMode ?? smartDefault`
+    // take effect for the new composition.
+    setStoredMode(preset.displayMode ?? null)
+    // Range: snap immediately if real data is loaded (gives a
+    // smooth visual handoff). Otherwise stash for the deferred
+    // effect to apply once new data lands. Both paths use
+    // presetToRange against the freshest dataExtent we have.
+    if (brushData !== SYNTHETIC_BRUSH_DATA) {
+      setRange(presetToRange(preset.rangePreset, dataExtent.start, dataExtent.end))
+    }
+    pendingPresetRangeRef.current = preset.rangePreset
+    track('preset_applied', {
+      preset_id: preset.id,
+      slot: slotId,
+      series_count: preset.series.length,
+      frequency: preset.frequency,
+      range_preset: preset.rangePreset,
+    })
+    setLiveAnnouncement(`התצוגה ${preset.name} הופעלה`)
+  }, [brushData, dataExtent, slotId])
 
   // Picker handler — toggle a single spec. If the (registryId,
   // district) pair is already on the chart, this removes it (the
@@ -1016,6 +1064,7 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
             open={pickerOpen}
             onClose={() => setPickerOpen(false)}
             onPick={handlePick}
+            onApplyPreset={handleApplyPreset}
             alreadyAdded={alreadyAdded}
             atCap={specs.length >= SERIES_CAP}
           />

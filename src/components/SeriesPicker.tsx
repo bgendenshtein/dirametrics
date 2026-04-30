@@ -33,10 +33,12 @@ import { useEffect, useRef, useState } from 'react'
 import {
   CATEGORIES,
   DISTRICTS,
+  PRESETS,
   SERIES_REGISTRY,
   isGroupEntry,
   specKey,
   type CategoryId,
+  type ChartPreset,
   type District,
   type RegistryEntry,
   type SeriesSpec,
@@ -51,9 +53,13 @@ interface SeriesPickerProps {
    * onPick call per spec covers both directions. Group entries
    * fan out into multiple onPick calls within the same click. */
   onPick: (spec: SeriesSpec) => void
+  /** Apply a complete preset — replaces the chart's series + sets
+   * frequency / range / display mode in one shot. Picker closes
+   * after; no per-spec toggling. */
+  onApplyPreset: (preset: ChartPreset) => void
   /** Set of specKey strings already on the chart. */
   alreadyAdded: Set<string>
-  /** True when the chart is at the series cap (5). Disables
+  /** True when the chart is at the series cap. Disables
    * not-yet-added entries; already-added entries stay clickable
    * for toggle-off. */
   atCap: boolean
@@ -150,10 +156,13 @@ export function SeriesPicker({
   open,
   onClose,
   onPick,
+  onApplyPreset,
   alreadyAdded,
   atCap,
 }: SeriesPickerProps) {
-  const [activeCategoryId, setActiveCategoryId] = useState<CategoryId>('rates')
+  // Default to the presets category — it's the first card the user
+  // sees on open and the most common path for new users.
+  const [activeCategoryId, setActiveCategoryId] = useState<CategoryId>('presets')
   const [district, setDistrict] = useState<District>('national')
   const [search, setSearch] = useState('')
   const panelRef = useRef<HTMLDivElement>(null)
@@ -190,7 +199,7 @@ export function SeriesPicker({
   useEffect(() => {
     if (open) {
       setSearch('')
-      setActiveCategoryId('rates')
+      setActiveCategoryId('presets')
       setDistrict('national')
       // Defer focus until the panel mounts — autoFocus on the input
       // would also work, but explicit focus here is symmetric with the
@@ -230,9 +239,13 @@ export function SeriesPicker({
   const matches = (name: string) =>
     search.trim() === '' ? true : name.includes(search.trim())
 
+  const isPresetsCategory = activeCategoryId === 'presets'
   const entries = SERIES_REGISTRY.filter(
     (e) => e.category === activeCategoryId && matches(e.name),
   )
+  const visiblePresets = isPresetsCategory
+    ? PRESETS.filter((p) => matches(p.name))
+    : []
 
   return (
     <div
@@ -337,7 +350,37 @@ export function SeriesPicker({
             </div>
           )}
 
-          {entries.length === 0 ? (
+          {isPresetsCategory ? (
+            visiblePresets.length === 0 ? (
+              <div className="series-picker-empty">אין תצוגות תואמות</div>
+            ) : (
+              <ul className="series-picker-entries">
+                {visiblePresets.map((p) => (
+                  <li key={p.id}>
+                    <button
+                      type="button"
+                      className="series-picker-entry series-picker-preset"
+                      onClick={() => {
+                        onApplyPreset(p)
+                        onClose()
+                      }}
+                    >
+                      {/* Small chart-style glyph distinguishes presets
+                       * from regular series rows. aria-hidden because
+                       * the row's name is the accessible label. */}
+                      <span
+                        className="series-picker-preset-icon"
+                        aria-hidden="true"
+                      >
+                        <PresetIcon />
+                      </span>
+                      <span className="series-picker-entry-name">{p.name}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )
+          ) : entries.length === 0 ? (
             <div className="series-picker-empty">אין סדרות תואמות</div>
           ) : (
             <ul className="series-picker-entries">
@@ -404,5 +447,25 @@ export function SeriesPicker({
         </div>
       </div>
     </div>
+  )
+}
+
+/** 12×12 mini-chart glyph (three ascending bars) — sits before
+ * each preset row's name to signal "this is a complete view, not a
+ * single series." currentColor inherits from the row's text color
+ * so it muted-out matches the surrounding type. */
+function PresetIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 12 12"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <rect x="1"  y="7" width="2" height="4" rx="0.5" />
+      <rect x="5"  y="4" width="2" height="7" rx="0.5" />
+      <rect x="9"  y="2" width="2" height="9" rx="0.5" />
+    </svg>
   )
 }
