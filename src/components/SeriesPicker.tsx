@@ -299,18 +299,41 @@ export function SeriesPicker({
               <label className="series-picker-district-label" htmlFor="picker-district">
                 מחוז
               </label>
-              <select
-                id="picker-district"
-                className="series-picker-district-select"
-                value={district}
-                onChange={(e) => setDistrict(e.target.value as District)}
-              >
-                {DISTRICTS.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.name}
-                  </option>
-                ))}
-              </select>
+              <span className="series-picker-district-select-wrap">
+                <select
+                  id="picker-district"
+                  className="series-picker-district-select"
+                  value={district}
+                  onChange={(e) => setDistrict(e.target.value as District)}
+                >
+                  {DISTRICTS.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
+                </select>
+                {/* Chevron: the select uses `appearance: none` (so the
+                 * native arrow is suppressed for visual consistency with
+                 * the rest of the picker), which left it reading as a
+                 * static label. This SVG restores the dropdown
+                 * affordance. pointer-events: none so clicks fall
+                 * through to the select; aria-hidden because the select
+                 * itself is the accessible control. */}
+                <svg
+                  className="series-picker-district-chevron"
+                  width="10"
+                  height="6"
+                  viewBox="0 0 10 6"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M1 1l4 4 4-4" />
+                </svg>
+              </span>
             </div>
           )}
 

@@ -1621,8 +1621,33 @@ main[id="main-content"]:focus-visible {
   color: var(--color-text-muted);
 }
 
-.series-picker-district-select {
+/* Wrapper exists solely to host the chevron alongside the native
+ * <select>. The select uses `appearance: none` (so the native arrow
+ * doesn't compete with the rest of the picker's flat styling), and
+ * the SVG below restores the dropdown affordance. The wrapper is the
+ * flex item now — the select fills it via width: 100%. */
+.series-picker-district-select-wrap {
+  position: relative;
   flex: 1 1 auto;
+  display: flex;
+}
+
+.series-picker-district-chevron {
+  position: absolute;
+  /* inline-end of the box → visually-left in this RTL layout. The
+   * 10px inset matches the select's padding-inline-end so the
+   * chevron centers in the reserved gutter. */
+  inset-inline-end: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  /* currentColor on the SVG inherits this — keeps the chevron muted
+   * and theme-aware (text-sub flips between light/dark mode). */
+  color: var(--color-text-sub);
+  pointer-events: none;
+}
+
+.series-picker-district-select {
+  width: 100%;
   appearance: none;
   border: 1px solid var(--color-border-input);
   border-radius: var(--radius-sm);
@@ -1630,7 +1655,12 @@ main[id="main-content"]:focus-visible {
   color: var(--color-text-strong);
   font-family: var(--font-sans);
   font-size: 12.5px;
-  padding: 4px 8px;
+  /* padding-inline-end is bumped from 8px to 26px to reserve room
+   * for the chevron sitting on the inline-end (visual-left in RTL)
+   * edge of the box. */
+  padding-block: 4px;
+  padding-inline-start: 8px;
+  padding-inline-end: 26px;
   cursor: pointer;
 }
 
