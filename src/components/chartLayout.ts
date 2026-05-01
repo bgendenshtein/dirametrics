@@ -13,7 +13,7 @@
 
 import { formatHebrewMonthShortYear } from '../lib/dateRange'
 
-export type SeriesFamily = 'idx' | 'pct' | 'count'
+export type SeriesFamily = 'idx' | 'pct' | 'count' | 'currency'
 
 /** Display mode is a chart-level transformation:
  *   values              — native units, multi-axis (default)
@@ -127,6 +127,12 @@ export function defaultAggregation(
   family: SeriesFamily,
   isStock?: boolean,
 ): Aggregation {
+  // Counts are flows by default (sum across periods) unless flagged
+  // as stocks (level readings). Everything else is a level: rates,
+  // indices, currency monetary values — the period's last reading.
+  // Currency series that should average across periods (e.g.,
+  // average wage per month, where Q1 = mean of Jan/Feb/Mar) override
+  // explicitly via RegistryLeafEntry.aggregation.
   if (family !== 'count') return 'last'
   return isStock ? 'last' : 'sum'
 }
@@ -342,6 +348,10 @@ export const AXIS_WIDTH_BY_FAMILY: Record<SeriesFamily, number> = {
   idx: 32,
   pct: 36,
   count: 36,
+  // Currency tick labels reuse formatTickKM ("13K") so 36 px fits;
+  // the ₪ suffix appears in the tooltip via the series's unit field,
+  // not on axis ticks.
+  currency: 36,
 }
 
 /** Recharts margins around the plot area. Tightened from prior

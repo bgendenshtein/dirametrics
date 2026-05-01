@@ -272,6 +272,10 @@ function tickFormatterForFamily(
 ): (v: number) => string {
   if (family === 'pct') return (v) => `${v.toFixed(1)}%`
   if (family === 'count') return formatTickKM
+  // Currency reuses the K/M abbreviator. The unit suffix (e.g. ₪)
+  // belongs in the tooltip (set via series.unit), not the axis tick —
+  // putting it on every tick label would just waste horizontal space.
+  if (family === 'currency') return formatTickKM
   if (thousands) {
     // Idx-family series that explicitly opt into thousands separators
     // keep the long form (no series currently do this — kept for

@@ -101,7 +101,7 @@ export interface RegistryLeafEntry {
   id: string
   name: string
   category: CategoryId
-  family: 'idx' | 'pct' | 'count'
+  family: 'idx' | 'pct' | 'count' | 'currency'
   defaultType: 'line' | 'bar' | 'area'
   isStock?: boolean
   unit?: string
@@ -615,18 +615,23 @@ export const SERIES_REGISTRY: RegistryEntry[] = [
     id: 'average-wage',
     name: 'שכר ממוצע למשרת שכיר',
     category: 'macro',
-    family: 'count',
+    // family='currency' keeps the wage on its own axis when shown
+    // alongside count-family series like population_addition (~10K
+    // monthly people vs ~13K NIS monthly wage — same nominal range
+    // but completely different units). Axis planning groups by
+    // family first; sharing 'count' would have collapsed them onto
+    // a single mis-scaled axis.
+    family: 'currency',
     defaultType: 'line',
-    isStock: false,
     unit: ' ₪',
     precision: 0,
     thousands: true,
     group: 'macro',
-    // count + !isStock defaults to 'sum' which is wrong here —
-    // summing 3 months of average wages would imply 3× a monthly
-    // pay-stub. Override to 'average'. Strong December seasonality
-    // (year-end bonuses) means quarterly/annual averages are a
-    // legitimate read of the period.
+    // currency defaults to 'last' (level reading) via defaultAggregation;
+    // wage overrides to 'average' so quarterly/annual rolls compute
+    // mean monthly wage rather than the period's terminal month.
+    // Strong December seasonality (year-end bonuses) makes 'last'
+    // misleading at year boundaries.
     aggregation: 'average',
     fetch: () => fetchCbsSeries('average_wage', 'national'),
   },
