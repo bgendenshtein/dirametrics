@@ -1152,17 +1152,19 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
        *   [apply-pill-slot      →  flex-end    =  visual-LEFT  ]
        *
        * Within the group (also RTL flex, default justify-content
-       * flex-start packs both children at the start = right):
+       * flex-start packs both children at the start = right), we
+       * put the label FIRST so it lands at the visual-far-right of
+       * the row — Hebrew RTL natural reading order is label-then-
+       * options ("תדירות חודשי | רבעוני | …"). Chips follow to
+       * the visual-left of the label, separated by --space-4.
        *
-       *   [ChipGroup chips      →  group's visual-RIGHT  =  row's far-right]
-       *   [label "תדירות"       →  to the left of the chips, gap apart    ]
-       *
-       * Net visual: pill_slot — — — תדירות chip chip chip chip
+       * Net visual: pill_slot — — — chip chip chip chip תדירות
        *             (visual-left)                       (visual-right)
        *
-       * paddingLeft/Right match the range row above so the rightmost
-       * chip's right edge lands on the same vertical line as the
-       * +הוסף סדרה button's right edge. */}
+       * paddingLeft/Right match the range row above so the row's
+       * content right edge lands on the same vertical line as the
+       * +הוסף סדרה button's right edge — the label's right edge
+       * sits flush with that line. */}
       <div
         className="chart-control-row"
         style={{
@@ -1171,13 +1173,13 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
         }}
       >
         <div className="chart-control-group">
+          <span className="chart-control-label">תדירות</span>
           <ChipGroup
             ariaLabel="תדירות"
             value={frequency}
             onChange={handleFrequency}
             options={FREQUENCY_OPTIONS}
           />
-          <span className="chart-control-label">תדירות</span>
         </div>
         <span className="apply-pill-slot">
           {pill?.change.kind === 'frequency' && (
@@ -1190,8 +1192,8 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
         </span>
       </div>
 
-      {/* 7. Display row — same layout as frequency row: chip group
-       * on visual-right, label to its visual-left, pill on visual-
+      {/* 7. Display row — same layout as frequency row: label on
+       * visual-far-right, chips to its visual-left, pill on visual-
        * far-left. */}
       <div
         className="chart-control-row"
@@ -1201,13 +1203,13 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
         }}
       >
         <div className="chart-control-group">
+          <span className="chart-control-label">תצוגה</span>
           <ChipGroup
             ariaLabel="תצוגה"
             value={mode}
             onChange={handleMode}
             options={DISPLAY_OPTIONS}
           />
-          <span className="chart-control-label">תצוגה</span>
         </div>
         <span className="apply-pill-slot">
           {pill?.change.kind === 'mode' && (
