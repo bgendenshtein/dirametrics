@@ -89,6 +89,13 @@ export const CATEGORIES: Category[] = [
 export interface SeriesPoint {
   date: Date
   value: number
+  /** True when this observation was imputed via a regression / proxy
+   * variable rather than computed from direct observed data.
+   * Sourced from the cbs_series.is_estimated column for series that
+   * have estimated portions (currently affordability_index's
+   * 2008-2010 backfill window). The chart engine reads this on each
+   * data point to render dashed segments where it's true. */
+  isEstimated?: boolean
 }
 
 /** Discriminated union: registry entries are either leaves (a single
@@ -193,7 +200,7 @@ export function getLeafEntry(id: string): RegistryLeafEntry | undefined {
 
 // ---- Source-specific fetch helpers --------------------------------------
 
-interface CbsSeriesRow { time_period: string; value: number }
+interface CbsSeriesRow { time_period: string; value: number; is_estimated?: boolean | null }
 interface CbsPriceRow  { date: string; value: number }
 interface BoiRateRow   { date: string; rate: number }
 
@@ -204,7 +211,7 @@ async function fetchCbsSeries(
 ): Promise<SeriesPoint[]> {
   const { data, error } = await supabase
     .from('cbs_series')
-    .select('time_period, value')
+    .select('time_period, value, is_estimated')
     .eq('topic', topic)
     .eq('district', DISTRICT_DB_KEY[district])
     .eq('frequency', frequency)
@@ -214,6 +221,7 @@ async function fetchCbsSeries(
   return ((data ?? []) as CbsSeriesRow[]).map((r) => ({
     date: new Date(r.time_period + 'T00:00:00.000Z'),
     value: Number(r.value),
+    isEstimated: r.is_estimated === true,
   }))
 }
 
@@ -536,6 +544,49 @@ export const SERIES_REGISTRY: RegistryEntry[] = [
     defaultType: 'line',
     precision: 1,
     fetch: () => fetchPriceIndex('200010_real'),
+  },
+
+  // Average apartment price (NIS) — quarterly, spliced 1983+ from
+  // CBS series 51000 (current methodology, 2017+) + 20000 (legacy
+  // methodology, 1983-2017). Stored in cbs_series with topic=
+  // 'avg_apartment_price', frequency='quarterly'. See ETL
+  // etl/fetch_cbs_avg_prices.py and methodology page.
+  //
+  // family='currency' keeps it on its own Y-axis when displayed
+  // alongside indices or counts; aggregation='last' uses the
+  // quarter's terminal reading at non-quarterly frequencies (the
+  // series IS quarterly upstream, so chart aggregation only
+  // matters for half-yearly/yearly views).
+  {
+    id: 'avg-apartment-price',
+    name: 'מחיר דירה ממוצעת',
+    category: 'prices-general',
+    family: 'currency',
+    defaultType: 'line',
+    unit: ' ₪',
+    precision: 0,
+    thousands: true,
+    aggregation: 'last',
+    fetch: () => fetchCbsSeries('avg_apartment_price', 'national', 'quarterly'),
+  },
+
+  // Affordability index — monthly. Computed in the same ETL from
+  // (avg_apartment_price step-function quarterly) + (average_wage
+  // monthly) + (mortgage_rate monthly). Stored as topic=
+  // 'affordability_index', frequency='monthly'. Higher = less
+  // affordable. See methodology page for the full formula and
+  // assumptions (70% LTV, 25-year term, non-indexed fixed rate,
+  // 2× average wage as household income).
+  {
+    id: 'affordability-index',
+    name: 'מדד אפורדביליות',
+    category: 'prices-general',
+    family: 'pct',
+    defaultType: 'line',
+    unit: '%',
+    precision: 1,
+    aggregation: 'average',
+    fetch: () => fetchCbsSeries('affordability_index', 'national', 'monthly'),
   },
 
   // 5. מחירים לפי מחוז — one entry per district. Each is its own

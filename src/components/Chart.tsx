@@ -69,6 +69,14 @@ export interface ChartSeriesDataPoint {
   date: Date
   value: number
   isProvisional?: boolean
+  /** True when this point's value was imputed via regression /
+   * proxy variable rather than computed from direct observed data.
+   * Currently used by the affordability series for its 2008-2010
+   * pre-mortgage-data window. expandSeries detects the boundary
+   * where isEstimated transitions from true → false and renders
+   * the leading estimated segment with a dashed stroke (mirror of
+   * the existing provisional-tail dashing). */
+  isEstimated?: boolean
   /** Set by transformForMode (indexed/percent modes): the pre-transform
    * native-units value, surfaced in the tooltip alongside the
    * transformed value. Undefined in values/log modes. */
@@ -367,32 +375,71 @@ function formatTooltipForMode(
  *                  tail metaphor doesn't translate cleanly to filled
  *                  rectangles anyway.
  * Tooltip dates within any series's tail (including bar series) get a
- * "(זמני)" annotation, which is the sole indicator for bars. */
+ * "(זמני)" annotation, which is the sole indicator for bars.
+ *
+ * Estimated head: orthogonal mechanism for the OPPOSITE end of a
+ * series. Series with `isEstimated=true` flagged on their leading
+ * data points (currently only the affordability series's 2008-2010
+ * regression-imputed window) get split a second time, with the
+ * leading estimated segment rendered with the same dashed stroke
+ * as the provisional tail. The split point appears in BOTH variants
+ * (mirror of the tail logic) for visual continuity. The two
+ * mechanisms compose: a series can have both an estimated head AND
+ * a provisional tail (estimated middle is unsupported — would need
+ * arbitrary-segment splitting; not a current use case). */
 const TAIL_LENGTH = 3
 const TAIL_SUFFIX = '__tail'
+const HEAD_SUFFIX = '__head'
 
 interface RenderSeries extends ChartSeries {
-  /** True for the tail variant; false (or undefined) for the main
-   * variant or for series that don't split. */
+  /** True for the provisional-tail variant. */
   isTail?: boolean
-  /** Always the base series's id, even on tail variants. Used to
-   * resolve axis assignment (axes are planned per-base-series, not
-   * per-render-entry). */
+  /** True for the estimated-head variant (leading isEstimated=true
+   * points of a series). Same dashed-stroke rendering as isTail. */
+  isHead?: boolean
+  /** Always the base series's id, even on tail/head variants. Used
+   * to resolve axis assignment (axes are planned per-base-series,
+   * not per-render-entry). */
   baseId: string
 }
 
-/** Split each series into main + tail render entries when applicable.
+/** Find the index of the FIRST data point that is NOT estimated.
+ * Returns -1 if no points are estimated (so no head split). Returns
+ * data.length if ALL points are estimated (a degenerate case we
+ * treat as no-split since there's no observed body to anchor the
+ * solid stroke). */
+function findEstimatedHeadBoundary(
+  data: ChartSeries['data'],
+): number {
+  if (data.length === 0 || !data[0].isEstimated) return -1
+  for (let i = 1; i < data.length; i++) {
+    if (!data[i].isEstimated) return i
+  }
+  return data.length // all estimated — handled by caller as no-split
+}
+
+/** Split each series into up to three render entries: estimated
+ * head (dashed) + observed body (solid) + provisional tail (dashed),
+ * in any combination that applies. Each transition point appears in
+ * BOTH adjacent variants so the dashed segment visually continues
+ * from the solid line.
+ *
  * Tail rules:
  *   - Only at monthly frequency (per spec — at quarterly/etc., the
  *     "last 3" provisional concept doesn't translate).
  *   - Series needs at least TAIL_LENGTH + 1 points to split (so the
  *     main has at least one non-shared point).
- *   - Bar series are NEVER split — bars render uniformly. Their
+ *   - Bar series are NEVER tail-split — bars render uniformly. Their
  *     provisional status is conveyed by the tooltip annotation only;
  *     see the barProvisional fold into provisionalTimestamps in
  *     Chart() below.
- *   - For line/area, the split point appears in BOTH variants so the
- *     dashed tail visually continues from the solid main line. */
+ *
+ * Head rules:
+ *   - Driven by per-point `isEstimated` flag, NOT by frequency or
+ *     length heuristics. Any series with leading isEstimated=true
+ *     points qualifies regardless of frequency.
+ *   - Bar series are also not head-split (same dashed-on-bar issue).
+ *   - If all points are estimated or none are, no head split. */
 function expandSeries(
   series: ChartSeries[],
   frequency: Frequency,
@@ -400,25 +447,68 @@ function expandSeries(
   const out: RenderSeries[] = []
   for (const s of series) {
     const seriesType = s.type ?? defaultTypeFor(s.family, s.isStock)
-    const shouldSplit =
+
+    // Head split: detect leading isEstimated=true segment. Only for
+    // line/area; bars skip both head and tail dashing.
+    let headEnd = -1 // exclusive index where estimated body ends
+    if (seriesType !== 'bar') {
+      const boundary = findEstimatedHeadBoundary(s.data)
+      // Valid split: at least one estimated point AND at least one
+      // observed point follows. boundary === data.length means all
+      // estimated, which we treat as no-split (no anchor for the
+      // solid body).
+      if (boundary > 0 && boundary < s.data.length) {
+        headEnd = boundary
+      }
+    }
+
+    // Tail split: existing monthly-last-3 heuristic. Bars exempted.
+    const tailStart =
       seriesType !== 'bar' &&
       frequency === 'monthly' &&
       s.data.length > TAIL_LENGTH
-    if (!shouldSplit) {
+        ? s.data.length - TAIL_LENGTH
+        : -1
+
+    // No splits applicable → emit single render entry.
+    if (headEnd < 0 && tailStart < 0) {
       out.push({ ...s, baseId: s.id })
       continue
     }
-    const splitIdx = s.data.length - TAIL_LENGTH
-    const main = s.data.slice(0, splitIdx + 1)
-    const tail = s.data.slice(splitIdx)
-    out.push({ ...s, data: main, baseId: s.id })
+
+    // Compute the three slice boundaries. Each transition point
+    // belongs to BOTH adjacent variants — that's how the dashed
+    // continuation visually attaches to the solid body.
+    //   estimated:  data[0 .. headEnd]              (inclusive of headEnd)
+    //   body:       data[headEnd .. tailStart]      (head and tail's overlap point each shared)
+    //   tail:       data[tailStart .. end]
+    // When a split is missing, its piece collapses into the body.
+    const bodyStart = headEnd >= 0 ? headEnd : 0
+    const bodyEnd = tailStart >= 0 ? tailStart : s.data.length - 1
+
+    if (headEnd >= 0) {
+      out.push({
+        ...s,
+        id: s.id + HEAD_SUFFIX,
+        data: s.data.slice(0, headEnd + 1),
+        isHead: true,
+        baseId: s.id,
+      })
+    }
     out.push({
       ...s,
-      id: s.id + TAIL_SUFFIX,
-      data: tail,
-      isTail: true,
+      data: s.data.slice(bodyStart, bodyEnd + 1),
       baseId: s.id,
     })
+    if (tailStart >= 0) {
+      out.push({
+        ...s,
+        id: s.id + TAIL_SUFFIX,
+        data: s.data.slice(tailStart),
+        isTail: true,
+        baseId: s.id,
+      })
+    }
   }
   return out
 }
@@ -489,12 +579,14 @@ function MultiTooltip({
   // Pre-aggregate stack totals so the tooltip can append a "סה״כ"
   // row beneath each stack's constituent series. Walk the payload
   // once, grouping numeric values by stackId. Skip null values and
-  // tail-suffix duplicates (the main key already counts).
+  // tail/head-suffix duplicates (the main key already counts).
+  const isSplitVariant = (k: string) =>
+    k.endsWith(TAIL_SUFFIX) || k.endsWith(HEAD_SUFFIX)
   const stackTotals = new Map<string, { total: number; sample: ChartSeries }>()
   for (const p of payload) {
     if (p.value == null) continue
     const rawKey = String(p.dataKey)
-    if (rawKey.endsWith(TAIL_SUFFIX)) continue
+    if (isSplitVariant(rawKey)) continue
     const s = seriesById[rawKey]
     if (!s?.stackId) continue
     const prev = stackTotals.get(s.stackId)
@@ -512,7 +604,7 @@ function MultiTooltip({
   for (let i = 0; i < payload.length; i++) {
     const p = payload[i]
     const rawKey = String(p.dataKey)
-    if (rawKey.endsWith(TAIL_SUFFIX)) continue
+    if (isSplitVariant(rawKey)) continue
     const s = seriesById[rawKey]
     if (!s?.stackId) continue
     lastIndexByStack.set(s.stackId, i)
@@ -530,7 +622,9 @@ function MultiTooltip({
         const rawKey = String(p.dataKey)
         const baseId = rawKey.endsWith(TAIL_SUFFIX)
           ? rawKey.slice(0, -TAIL_SUFFIX.length)
-          : rawKey
+          : rawKey.endsWith(HEAD_SUFFIX)
+            ? rawKey.slice(0, -HEAD_SUFFIX.length)
+            : rawKey
         if (seenBaseIds.has(baseId)) return null
         const s = seriesById[baseId]
         if (!s || p.value == null) return null
@@ -781,6 +875,12 @@ export default function Chart({ series, frequency, displayMode, height }: ChartP
             const type = s.type ?? defaultTypeFor(s.family, s.isStock)
             const yAxisId = axisBySeries[s.baseId]
             const isTail = !!s.isTail
+            const isHead = !!s.isHead
+            // Both ends share the same dashed treatment — head
+            // (regression-imputed leading window) and tail (provisional
+            // tail of monthly series) are rendered identically. The
+            // legend tooltip carries the methodology distinction.
+            const isDashed = isTail || isHead
             if (type === 'bar') {
               // All bars render uniformly. Provisional bars (last
               // TAIL_LENGTH at monthly frequency) are NOT visually
@@ -814,10 +914,10 @@ export default function Chart({ series, frequency, displayMode, height }: ChartP
             // this, adding a series whose dates don't coincide with
             // the others' month-firsts shatters their lines into
             // disconnected single-point segments.
-            // Tail dasharray is ~stroke-width × 3 on, × 2 off — visible
-            // as discrete segments at 1.5–2 px stroke without becoming
-            // dotted noise.
-            const tailDash = isTail ? '4 3' : undefined
+            // Dashed dasharray is ~stroke-width × 3 on, × 2 off —
+            // visible as discrete segments at 1.5-2 px stroke without
+            // becoming dotted noise. Same value for both head and tail.
+            const dashArray = isDashed ? '4 3' : undefined
             if (type === 'area') {
               return (
                 <Area
@@ -828,9 +928,9 @@ export default function Chart({ series, frequency, displayMode, height }: ChartP
                   yAxisId={yAxisId}
                   stroke={s.color}
                   strokeWidth={2}
-                  strokeDasharray={tailDash}
+                  strokeDasharray={dashArray}
                   fill={s.color}
-                  fillOpacity={isTail ? 0.06 : 0.12}
+                  fillOpacity={isDashed ? 0.06 : 0.12}
                   dot={false}
                   connectNulls
                   isAnimationActive={false}
@@ -846,7 +946,7 @@ export default function Chart({ series, frequency, displayMode, height }: ChartP
                 yAxisId={yAxisId}
                 stroke={s.color}
                 strokeWidth={1.5}
-                strokeDasharray={tailDash}
+                strokeDasharray={dashArray}
                 dot={false}
                 connectNulls
                 isAnimationActive={false}

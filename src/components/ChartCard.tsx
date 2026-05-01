@@ -396,7 +396,16 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
         // in practice, but useSeriesList might briefly hold a stale id).
         name: displaySeriesName(entry?.name ?? h.spec.registryId, h.spec.district),
         color: seriesColorBySlot(slot, theme),
-        data: h.data.map((p) => ({ date: p.date, value: p.value })),
+        // Preserve isEstimated flow-through so Chart.tsx's expandSeries
+        // can detect the estimated head and render it dashed. Other
+        // SeriesPoint fields (e.g., upstream isProvisional which CBS
+        // sets) aren't propagated — the chart's existing TAIL_LENGTH
+        // heuristic handles provisionality on its own.
+        data: h.data.map((p) => ({
+          date: p.date,
+          value: p.value,
+          isEstimated: p.isEstimated,
+        })),
         family: entry?.family ?? 'count',
         type: typeOverrides[id] ?? entry?.defaultType,
         isStock: entry?.isStock,

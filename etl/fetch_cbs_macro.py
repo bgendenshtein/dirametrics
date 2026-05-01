@@ -27,11 +27,25 @@ that we'd want to use:
         exist for a given period, falling back to OLD elsewhere. The
         resulting series is continuous from Jan 2012.
 
-  - average_wage         (RAW)
-        From series 613208 (monthly average wage per employee
-        position, total economy including foreign workers, original
-        data, 2011 industry classification, Bituach Leumi). Values in
-        NIS. Strong December seasonality from year-end bonuses.
+  - average_wage         (DERIVED — spliced)
+        Two underlying CBS series feed this topic to extend coverage
+        from 2012 back to 2005:
+            613208 — current methodology (2011 industry classification,
+                     Bituach Leumi, INCLUDES foreign workers,
+                     [33,1,2] = "כולל עובדים זרים").  Coverage:
+                     Jan 2012 → present.
+            623152 — legacy methodology (2005 processing system,
+                     Israeli workers ONLY, [33,4,1] = "עובדים
+                     ישראלים בלבד").  Coverage: Jan 2005 → Dec 2011.
+        No overlap exists; the series form a clean abutting boundary
+        at Dec 2011 / Jan 2012. Splice factor is computed from the
+        3-month adjacent window (mean of 613208 Q1 2012 ÷ mean of
+        623152 Q4 2011) — empirically ≈ 0.996, a sub-1% adjustment.
+        The methodology populations differ (Israeli-only vs incl-
+        foreign), but in 2011 the foreign-worker share was small
+        enough that economy-wide means align nearly identically.
+        Values in NIS. Strong December seasonality from year-end
+        bonuses (more pronounced in recent years).
 
 Frequency stored as 'monthly' for all three. Higher-frequency
 aggregations (quarterly / semiannual / annual) are computed
@@ -40,8 +54,9 @@ aggregation method ('sum' for population_addition, 'average' for
 unemployment_rate and average_wage — see seriesRegistry.ts).
 
 is_provisional: top 3 most-recent observations per topic are flagged.
-is_derived:     true for population_addition (computed diff) and
-                unemployment_rate (spliced). false for average_wage.
+is_derived:     true for population_addition (computed diff),
+                unemployment_rate (spliced), and average_wage
+                (spliced).
 
 Failure handling: each series fetched independently; failures are
 logged and the run continues for the rest. Splice + diff are skipped
@@ -73,7 +88,8 @@ DEFAULT_TIMEOUT = 60
 POPULATION_TOTAL_ID = 3763           # monthly, 1991-01 onward, in thousands
 UNEMPLOYMENT_OLD_ID = 490013         # 2008-census methodology, Jan 2012 – Dec 2025
 UNEMPLOYMENT_NEW_ID = 40013          # 2022-census methodology, Jan 2025 – present
-AVERAGE_WAGE_ID = 613208             # monthly NIS, Jan 2012 onward
+AVERAGE_WAGE_ID = 613208             # monthly NIS, Jan 2012 onward (current)
+LEGACY_WAGE_ID = 623152              # monthly NIS, Jan 2005 – Dec 2011 (legacy)
 
 POPULATION_NAME = "תוספת אוכלוסייה (חודשית)"
 UNEMPLOYMENT_NAME = "שיעור אבטלה"
@@ -258,6 +274,63 @@ def compute_population_addition(pop: dict[str, float]) -> dict[str, float]:
     return out
 
 
+def splice_wage(
+    legacy: dict[str, float], current: dict[str, float]
+) -> dict[str, float]:
+    """Splice legacy wage (623152, 2005-2011) into current wage
+    (613208, 2012+) for a continuous monthly series back to 2005.
+
+    Unlike unemployment, no overlap exists — the two series form a
+    clean abutting boundary at Dec 2011 / Jan 2012. The splice factor
+    is computed from the 3-month adjacent window:
+
+        factor = mean(current[Jan-Mar 2012]) / mean(legacy[Oct-Dec 2011])
+
+    Multiplying legacy values by `factor` aligns their level to the
+    current methodology. The factor is empirically ≈ 0.996 — a sub-1%
+    adjustment despite the population difference (Israeli-only legacy
+    vs incl-foreign current), because foreign-worker share at the 2011
+    boundary was small enough not to materially shift the economy-wide
+    mean.
+
+    On missing boundary data: returns `current` only with a warning,
+    so the topic still gets populated for 2012+ even if the legacy
+    fetch failed.
+    """
+    if not current:
+        log.warning("wage splice: current series empty; nothing to splice into")
+        return legacy or {}
+    if not legacy:
+        log.warning("wage splice: legacy series empty; returning current only")
+        return current
+
+    boundary_legacy = ['2011-10', '2011-11', '2011-12']
+    boundary_current = ['2012-01', '2012-02', '2012-03']
+    legacy_vals = [legacy[k] for k in boundary_legacy if k in legacy]
+    current_vals = [current[k] for k in boundary_current if k in current]
+    if not legacy_vals or not current_vals:
+        log.warning(
+            "wage splice: missing boundary data (legacy=%d, current=%d); "
+            "returning current only", len(legacy_vals), len(current_vals),
+        )
+        return current
+
+    legacy_mean = sum(legacy_vals) / len(legacy_vals)
+    current_mean = sum(current_vals) / len(current_vals)
+    factor = current_mean / legacy_mean
+    log.info(
+        "wage splice: legacy Q4-2011 mean=%.1f, current Q1-2012 mean=%.1f, "
+        "factor=%.4f", legacy_mean, current_mean, factor,
+    )
+
+    spliced: dict[str, float] = {k: v * factor for k, v in legacy.items()}
+    # Current overlays the factored legacy. With no overlap this is
+    # just concatenation; with future revisions that introduce a brief
+    # overlap, current wins (it's the active methodology).
+    spliced.update(current)
+    return spliced
+
+
 def splice_unemployment(
     old: dict[str, float], new: dict[str, float]
 ) -> dict[str, float]:
@@ -376,15 +449,26 @@ def main() -> int:
     else:
         failures.append("unemployment_rate")
 
-    # 3. Average wage (raw)
+    # 3. Average wage (spliced)
     try:
-        wage = fetch_series(AVERAGE_WAGE_ID, session)
+        wage_current = fetch_series(AVERAGE_WAGE_ID, session)
+    except Exception as exc:
+        log.exception("average_wage current (613208) fetch failed: %s", exc)
+        wage_current = {}
+    try:
+        wage_legacy = fetch_series(LEGACY_WAGE_ID, session)
+    except Exception as exc:
+        log.exception("average_wage legacy (623152) fetch failed: %s", exc)
+        wage_legacy = {}
+    if wage_current or wage_legacy:
+        spliced_wage = splice_wage(wage_legacy, wage_current)
+        # series_id = current ID (active methodology going forward),
+        # following the same convention as the unemployment splice.
         all_rows.extend(to_db_rows(
             "average_wage", WAGE_NAME, AVERAGE_WAGE_ID,
-            is_derived=False, period_to_value=wage,
+            is_derived=True, period_to_value=spliced_wage,
         ))
-    except Exception as exc:
-        log.exception("average_wage failed: %s", exc)
+    else:
         failures.append("average_wage")
 
     if not all_rows:

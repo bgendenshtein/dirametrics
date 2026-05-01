@@ -434,7 +434,9 @@ For quick reference (mapping verified 2026-04-25):
 | `new_inventory`        | 44,10,4   | monthly | national only |
 | `population_addition`  | 2,1,1,1,2 (DERIVED diff) | monthly | national |
 | `unemployment_rate`    | 11,5,1 + 11,6,1 (SPLICED) | monthly | national |
-| `average_wage`         | 33,1,2    | monthly | national |
+| `average_wage`         | 33,1,2 + 33,4,1 (SPLICED) | monthly | national |
+| `avg_apartment_price`  | 51000 + 20000 (SPLICED, BoardsGen) | quarterly | national |
+| `affordability_index`  | DERIVED                   | monthly | national |
 
 Series IDs are listed in `TOPICS` in `etl/fetch_cbs_series.py` for
 construction/sales topics, and in module-level constants in
@@ -474,8 +476,98 @@ this list also serves as a record of what's currently allowed):
 - `population_addition` (2026-05-01, with the מאקרו category)
 - `unemployment_rate` (2026-05-01, with the מאקרו category)
 - `average_wage` (2026-05-01, with the מאקרו category)
+- `avg_apartment_price` (2026-05-01, with the affordability work)
+- `affordability_index` (2026-05-01, with the affordability work)
 
 If you ever see an upsert fail with a Postgres `23514` /
 "new row for relation cbs_series violates check constraint
 cbs_series_topic_valid" message, that's the constraint catching
 a topic value that hasn't been added to the allowed list yet.
+
+## Schema additions: `is_estimated` column
+
+The `cbs_series` table needs an `is_estimated` boolean column to
+distinguish observations imputed via regression / proxy variables
+from those computed from direct observed data. Currently used by
+the affordability_index series for its 2008–Jun 2011 backfill
+window (mortgage rate estimated from BoI 7Y yield).
+
+Migration applied 2026-05-01:
+
+```sql
+ALTER TABLE cbs_series ADD COLUMN is_estimated BOOLEAN DEFAULT FALSE;
+```
+
+The column DEFAULT FALSE means existing rows are unaffected, and
+older ETLs that don't pass the field continue to work — they just
+write rows with is_estimated=false implicitly. Only
+`fetch_cbs_avg_prices.py` currently sets is_estimated=true on
+specific affordability rows.
+
+Distinguish from sibling flags:
+
+  - `is_provisional`: subject to revision by the source publisher
+    (CBS marks recent observations as such).
+  - `is_derived`: computed from other series in our DB
+    (e.g., affordability itself, real indices, spliced series).
+  - `is_estimated`: imputed from a proxy variable / regression
+    when direct data isn't available.
+
+A single row can be both derived and estimated (the affordability
+2008-2010 rows are both — derived from inputs, AND imputed via
+yield-curve regression for the mortgage-rate component).
+
+## CBS Boards Generator — third API surface (apartment prices)
+
+Average apartment price levels (in NIS, not as an index) are NOT
+exposed by the documented APIs (`api.cbs.gov.il/index/...` or
+`apis.cbs.gov.il/series/...`). They live on a third surface — the
+internal Boards Generator app at `boardsgenerator.cbs.gov.il/`.
+`etl/fetch_cbs_avg_prices.py` is the only client we have for it.
+
+The endpoint:
+
+  POST `https://boardsgenerator.cbs.gov.il/Handlers/Prices/GridHandler.ashx?mode=Init`
+
+Anti-bot signature, ALL of these required for the response to
+contain rows (otherwise: HTTP 200 + empty body, no error):
+
+  - Form-encoded body. The JSON payload goes inside a `query` field
+    (URL-encoded), with `mode=Init` as a second form field. Sending
+    JSON as the raw request body returns empty.
+  - `Content-Type: application/x-www-form-urlencoded; charset=UTF-8`
+  - `X-TS-AJAX-Request: true`     (Akamai's bot-mitigation marker)
+  - `X-Requested-With: XMLHttpRequest`
+  - `Referer: https://boardsgenerator.cbs.gov.il/pages/Prices/WizardPage.aspx?r=`
+  - `Origin: https://boardsgenerator.cbs.gov.il`
+  - Browser-style User-Agent. Generic Python UAs get rejected (silently).
+  - Session cookies (AuthToken, ASP.NET_SessionId, several Akamai TS*
+    cookies) obtained via initial GET on the WizardPage URL.
+
+Discovering subjects + series codes: there's a sister endpoint at
+`/Handlers/Prices/WizardHandler.ashx` with `mode=Filters`, body:
+
+  ```json
+  { "mode": "Filters", "dataTypeId": "2", "subjectId": "<N>",
+    "text": "", "lang": "Hebrew" }
+  ```
+
+(Note: `WizardHandler` accepts JSON content-type natively, unlike
+`GridHandler` which requires form-encoding — different ASP.NET
+handlers, different conventions.)
+
+Response includes `Series.Items[]` listing every series under that
+subject. To find which subjectId hosts a given series code, sweep
+subjectIds and check the returned codes.
+
+Subject IDs we use:
+  - `165`  → contains code `51000` (current "מחירים ממוצעים של דירות
+            לפי מחוזות" methodology, 2017+)
+  - `7`    → contains code `20000` (legacy "מחירים ממוצעים של דירות
+            בבעלות הדיירים" methodology, 1983-2017)
+
+Quirk in the legacy series 20000: the `Currency` row label switches
+from `שקלים חדשים` (raw NIS) to `אלפי שקלים חדשים` (thousands of
+NIS) at year 2003 — purely a CBS display-convention change, not a
+unit reform. The ETL normalizes to raw NIS at parse time so all
+years end up on the same scale before splicing.
