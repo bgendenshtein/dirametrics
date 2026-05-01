@@ -12,6 +12,7 @@
  * and StrictMode boundaries. App stays a plain layout component.
  */
 
+import { Analytics } from '@vercel/analytics/react'
 import { lazy, Suspense, useEffect } from 'react'
 import { Route, Routes, useLocation } from 'react-router-dom'
 
@@ -68,6 +69,16 @@ export default function App() {
       </Suspense>
       <SiteFooter />
       <ConsentBanner />
+      {/* Vercel Web Analytics — cookieless visit counting that runs
+       * for ALL visitors, not just ones who accept the consent
+       * banner. Counts page views + basic device/locale info; no
+       * tracking cookies, no cross-site identifiers. Sits OUTSIDE
+       * the consent gate intentionally: it's how we measure raw
+       * visit volume without relying on GA4 acceptance rates. The
+       * Analytics component injects its script lazily on mount and
+       * pings Vercel's edge endpoint, which is auto-wired for
+       * projects hosted on Vercel — no measurement ID needed. */}
+      <Analytics />
     </>
   )
 }
