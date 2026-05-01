@@ -487,12 +487,29 @@ export const SERIES_REGISTRY: RegistryEntry[] = [
     precision: 1,
     fetch: () => fetchPriceIndex(120010),
   },
-  // Real (inflation-adjusted) housing & rent indices, derived in
-  // fetch_cbs_price_indices.py by dividing each nominal month by
-  // the CPI of that month and rebasing to the latest CPI month
-  // ("today's purchasing power"). See docs/methodology.md →
-  // "מדדים ריאליים". Stored under string series_ids — the
-  // cbs_price_indices.series_id column is text and tolerates both.
+  // Construction inputs index for residential building. CBS series
+  // 200010, monthly from Jan 1956 onward — recommended viewed in
+  // log scale for long timeframes (same advice as CPI/rent), since
+  // 70 years of compounding makes the linear view crush the recent
+  // decades. Cost metric for builders, not a price predictor —
+  // empirical correlation with final housing prices is weak (see
+  // methodology page).
+  {
+    id: 'cbs-price-construction-inputs',
+    name: 'מדד תשומות הבנייה למגורים',
+    category: 'prices-general',
+    family: 'idx',
+    defaultType: 'line',
+    precision: 1,
+    fetch: () => fetchPriceIndex(200010),
+  },
+  // Real (inflation-adjusted) housing, rent, and construction-
+  // inputs indices, derived in fetch_cbs_price_indices.py by
+  // dividing each nominal month by the CPI of that month and
+  // rebasing to the latest CPI month ("today's purchasing power").
+  // See docs/methodology.md → "מדדים ריאליים". Stored under string
+  // series_ids — the cbs_price_indices.series_id column is text
+  // and tolerates both.
   {
     id: 'cbs-price-housing-real',
     name: 'מדד מחירי דירות ריאלי',
@@ -510,6 +527,15 @@ export const SERIES_REGISTRY: RegistryEntry[] = [
     defaultType: 'line',
     precision: 1,
     fetch: () => fetchPriceIndex('120460_real'),
+  },
+  {
+    id: 'cbs-price-construction-inputs-real',
+    name: 'מדד תשומות הבנייה למגורים ריאלי',
+    category: 'prices-general',
+    family: 'idx',
+    defaultType: 'line',
+    precision: 1,
+    fetch: () => fetchPriceIndex('200010_real'),
   },
 
   // 5. מחירים לפי מחוז — one entry per district. Each is its own

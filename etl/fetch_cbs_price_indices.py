@@ -74,6 +74,15 @@ SERIES = [
     {"id": 40010,  "name": "מדד מחירי דירות"},
     {"id": 120460, "name": "מדד שכר דירה"},
     {"id": 120010, "name": "מדד המחירים לצרכן - כללי"},
+    # Residential construction inputs index (CBS chapter c). Coverage
+    # from Jan 1956 onward — 70+ years across 9 base periods, so
+    # chain_to_latest_base will compound 8 boundary factors to scale
+    # the oldest segment onto the current 2025-יולי base. Cumulative
+    # chaining error in the 1956-segment is bounded at ~8pp under our
+    # MoM-≈-0 assumption — acceptable for a long-history macro
+    # indicator (the recent decades, where the chart is mostly read,
+    # are at most 1–2 boundaries away from current base).
+    {"id": 200010, "name": "מדד תשומות הבנייה למגורים"},
     # By-district housing price indices (CBS chapter aa, subject 166).
     # Available from October 2017. Distinct from the national index (40010,
     # available from 1994) — UI should show this gap as missing data, not zero.
@@ -86,17 +95,21 @@ SERIES = [
 ]
 
 # Source ids (from the SERIES table above) used to derive the real
-# (inflation-adjusted) variants. CPI_ID is the deflator; HOUSING and
-# RENT are deflated and stored under string ids (the cbs_price_indices
-# series_id column is text, so int and string ids coexist).
+# (inflation-adjusted) variants. CPI_ID is the deflator; HOUSING,
+# RENT, and CONSTRUCTION_INPUTS are deflated and stored under string
+# ids (the cbs_price_indices series_id column is text, so int and
+# string ids coexist).
 HOUSING_NOMINAL_ID = 40010
 RENT_NOMINAL_ID = 120460
+CONSTRUCTION_INPUTS_NOMINAL_ID = 200010
 CPI_ID = 120010
 
 REAL_HOUSING_ID = "40010_real"
 REAL_HOUSING_NAME = "מדד מחירי דירות ריאלי"
 REAL_RENT_ID = "120460_real"
 REAL_RENT_NAME = "מדד מחירי שכירות ריאלי"
+REAL_CONSTRUCTION_INPUTS_ID = "200010_real"
+REAL_CONSTRUCTION_INPUTS_NAME = "מדד תשומות הבנייה למגורים ריאלי"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -524,6 +537,12 @@ def main() -> int:
         cpi_chained,
         REAL_RENT_ID,
         REAL_RENT_NAME,
+    ))
+    all_rows.extend(compute_real_index(
+        chained_by_id.get(CONSTRUCTION_INPUTS_NOMINAL_ID, []),
+        cpi_chained,
+        REAL_CONSTRUCTION_INPUTS_ID,
+        REAL_CONSTRUCTION_INPUTS_NAME,
     ))
 
     if not all_rows:
