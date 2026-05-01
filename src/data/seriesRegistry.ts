@@ -579,7 +579,7 @@ export const SERIES_REGISTRY: RegistryEntry[] = [
   // 2× average wage as household income).
   {
     id: 'affordability-index',
-    name: 'מדד אפורדביליות',
+    name: 'מדד אפורדביליות (יחס תשלום משכנתא לשתי משכורות ממוצעות)',
     category: 'prices-general',
     family: 'pct',
     defaultType: 'line',
