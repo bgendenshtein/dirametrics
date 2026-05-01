@@ -413,6 +413,13 @@ export const ChartCard = forwardRef<ChartCardHandle, ChartCardProps>(function Ch
         // split same-family series onto separate axes when their
         // groups differ (sales vs construction is the canonical case).
         group: entry?.group,
+        // Forward the registry's per-series aggregation override so
+        // filteredSeries' aggregateData call uses 'average' for
+        // unemployment / wage instead of the family default
+        // ('last' for pct, 'sum' for count). Falls back to
+        // defaultAggregation in the filteredSeries memo when
+        // undefined.
+        aggregation: entry?.aggregation,
       }
     })
   }, [realMode, hydrated, theme, typeOverrides, colorSlots])

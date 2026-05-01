@@ -432,5 +432,50 @@ For quick reference (mapping verified 2026-04-25):
 | `new_sales_free`       | DERIVED   | monthly | national + 6 districts |
 | `second_hand_sales`          | 44,10,7   | monthly | national + 6 districts |
 | `new_inventory`        | 44,10,4   | monthly | national only |
+| `population_addition`  | 2,1,1,1,2 (DERIVED diff) | monthly | national |
+| `unemployment_rate`    | 11,5,1 + 11,6,1 (SPLICED) | monthly | national |
+| `average_wage`         | 33,1,2    | monthly | national |
 
-Series IDs are listed in `TOPICS` in `etl/fetch_cbs_series.py`.
+Series IDs are listed in `TOPICS` in `etl/fetch_cbs_series.py` for
+construction/sales topics, and in module-level constants in
+`etl/fetch_cbs_macro.py` for the macro topics.
+
+## DB constraint: cbs_series_topic_valid
+
+The `cbs_series.topic` column has a CHECK constraint
+(`cbs_series_topic_valid`) that enumerates the allowed topic
+strings. Adding a new topic value requires updating that
+constraint **before** the ETL writes rows under it; otherwise the
+upsert fails with a constraint-violation error and the run aborts.
+
+Workflow when adding a new topic:
+
+1. Pick the topic string (snake_case, matches the convention used
+   by existing topics).
+2. Update the CHECK constraint in Supabase — one of:
+   - SQL editor:
+     ```sql
+     ALTER TABLE cbs_series DROP CONSTRAINT cbs_series_topic_valid;
+     ALTER TABLE cbs_series ADD CONSTRAINT cbs_series_topic_valid
+       CHECK (topic IN (
+         '<existing topics...>',
+         '<new topic>'
+       ));
+     ```
+   - Or via the Table Editor → Constraints UI.
+3. Add the new topic to the relevant ETL script (TOPICS dict in
+   `fetch_cbs_series.py`, or a new constant in a dedicated script
+   like `fetch_cbs_macro.py`).
+4. Run the ETL and verify rows land.
+
+Examples of constraint updates that have already been applied (so
+this list also serves as a record of what's currently allowed):
+
+- `population_addition` (2026-05-01, with the מאקרו category)
+- `unemployment_rate` (2026-05-01, with the מאקרו category)
+- `average_wage` (2026-05-01, with the מאקרו category)
+
+If you ever see an upsert fail with a Postgres `23514` /
+"new row for relation cbs_series violates check constraint
+cbs_series_topic_valid" message, that's the constraint catching
+a topic value that hasn't been added to the allowed list yet.

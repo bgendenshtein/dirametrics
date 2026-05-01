@@ -121,7 +121,7 @@ export function formatXAxisTick(t: number, frequency: Frequency): string {
  *   sum   — flows accumulate (sales/permits/starts/completions)
  *   last  — stocks and rates take the period's last reading (HPI,
  *           inventory, active construction, mortgage rate, BoI rate) */
-export type Aggregation = 'last' | 'sum'
+export type Aggregation = 'last' | 'sum' | 'average'
 
 export function defaultAggregation(
   family: SeriesFamily,
@@ -275,10 +275,25 @@ export function aggregateData<P extends AggregatablePoint>(
       (a, b) => a.date.getTime() - b.date.getTime(),
     )
     const last = sorted[sorted.length - 1]
-    const value =
-      method === 'sum'
-        ? sorted.reduce((acc, p) => acc + p.value, 0)
+    let value: number
+    if (method === 'sum') {
+      value = sorted.reduce((acc, p) => acc + p.value, 0)
+    } else if (method === 'average') {
+      // Arithmetic mean across the period's monthly observations.
+      // Used for rates and currency series where summing is
+      // meaningless (an unemployment rate "summed across 3 months"
+      // would be ~9% for a steady ~3% rate). NaN/non-finite values
+      // are filtered before averaging so a missing month doesn't
+      // poison the period; if no finite values remain, fall back to
+      // last.value to avoid emitting a NaN point.
+      const finite = sorted.filter((p) => Number.isFinite(p.value))
+      value = finite.length > 0
+        ? finite.reduce((acc, p) => acc + p.value, 0) / finite.length
         : last.value
+    } else {
+      // 'last'
+      value = last.value
+    }
     // Construct a new point preserving the input shape (so callers
     // that subclass AggregatablePoint don't lose extra fields beyond
     // what's mutated here).

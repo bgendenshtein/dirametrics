@@ -17,7 +17,7 @@
  * UI tree.
  */
 
-import type { DisplayMode, Frequency } from '../components/chartLayout'
+import type { Aggregation, DisplayMode, Frequency } from '../components/chartLayout'
 import { supabase } from '../lib/supabase'
 
 export type District =
@@ -59,6 +59,7 @@ export type CategoryId =
   | 'sales'
   | 'prices-general'
   | 'prices-by-district'
+  | 'macro'
 
 export interface Category {
   id: CategoryId
@@ -82,6 +83,7 @@ export const CATEGORIES: Category[] = [
   { id: 'sales',              name: 'מכירות',           hasDistrictSelector: true  },
   { id: 'prices-general',     name: 'מחירים כלליים',     hasDistrictSelector: false },
   { id: 'prices-by-district', name: 'מחירים לפי מחוז',   hasDistrictSelector: false },
+  { id: 'macro',              name: 'מאקרו',             hasDistrictSelector: false },
 ]
 
 export interface SeriesPoint {
@@ -140,6 +142,18 @@ export interface RegistryLeafEntry {
    * splitByMedian still runs as a safety net for ungrouped count
    * series with very different magnitudes. */
   group?: string
+  /** Per-series aggregation method override. Defaults derive from
+   * family + isStock via defaultAggregation:
+   *   pct, idx          → 'last'    (end-of-period reading)
+   *   count + !isStock  → 'sum'     (flows accumulate)
+   *   count + isStock   → 'last'    (stocks: end-of-period level)
+   *
+   * Set explicitly to override — e.g., the unemployment rate is
+   * family='pct' but should aggregate as 'average' across months
+   * (not 'last' — Q1 unemployment isn't "March's rate", it's the
+   * mean of Jan/Feb/Mar). Same logic for the average-wage series
+   * (family='count' but conceptually a rate per position). */
+  aggregation?: Aggregation
   fetch: (district: District) => Promise<SeriesPoint[]>
 }
 
@@ -555,6 +569,66 @@ export const SERIES_REGISTRY: RegistryEntry[] = [
     defaultType: 'line',
     precision: 1,
     fetch: () => fetchPriceIndex(60500),
+  },
+
+  // 6. מאקרו — population, labor, wage. Stored in cbs_series with
+  // district='national' under three new topics; the ETL is
+  // etl/fetch_cbs_macro.py. All three render at monthly cadence
+  // upstream; per-series aggregation overrides drive sensible
+  // quarterly/annual rollups (sum for the population addition,
+  // average for the rate + the wage — averaging keeps a quarterly
+  // unemployment "rate" reading like an actual rate rather than
+  // 3× the monthly value).
+  {
+    id: 'population-addition',
+    name: 'תוספת אוכלוסייה (חודשית)',
+    category: 'macro',
+    family: 'count',
+    defaultType: 'bar',
+    isStock: false,
+    precision: 0,
+    thousands: true,
+    group: 'macro',
+    // Default 'sum' for count + !isStock already gives the right
+    // quarterly/annual total of monthly net additions; left explicit
+    // here for clarity since this is the canonical sum-aggregable
+    // macro series.
+    aggregation: 'sum',
+    fetch: () => fetchCbsSeries('population_addition', 'national'),
+  },
+  {
+    id: 'unemployment-rate',
+    name: 'שיעור אבטלה',
+    category: 'macro',
+    family: 'pct',
+    defaultType: 'line',
+    unit: '%',
+    precision: 1,
+    group: 'macro',
+    // pct's family default is 'last' — wrong for a rate that's a
+    // monthly snapshot of a continuously-changing population stat.
+    // 'average' gives an arithmetic mean across the period's months.
+    aggregation: 'average',
+    fetch: () => fetchCbsSeries('unemployment_rate', 'national'),
+  },
+  {
+    id: 'average-wage',
+    name: 'שכר ממוצע למשרת שכיר',
+    category: 'macro',
+    family: 'count',
+    defaultType: 'line',
+    isStock: false,
+    unit: ' ₪',
+    precision: 0,
+    thousands: true,
+    group: 'macro',
+    // count + !isStock defaults to 'sum' which is wrong here —
+    // summing 3 months of average wages would imply 3× a monthly
+    // pay-stub. Override to 'average'. Strong December seasonality
+    // (year-end bonuses) means quarterly/annual averages are a
+    // legitimate read of the period.
+    aggregation: 'average',
+    fetch: () => fetchCbsSeries('average_wage', 'national'),
   },
 ]
 
