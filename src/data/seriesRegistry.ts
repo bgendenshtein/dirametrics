@@ -608,7 +608,7 @@ export const SERIES_REGISTRY: RegistryEntry[] = [
   // 2× average wage as household income).
   {
     id: 'affordability-index',
-    name: 'יחס תשלום משכנתא לשתי משכורות ממוצעות',
+    name: 'יחס תשלום משכנתא להכנסה זוגית נטו',
     category: 'prices-general',
     family: 'pct',
     defaultType: 'line',
