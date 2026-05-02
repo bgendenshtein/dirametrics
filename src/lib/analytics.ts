@@ -41,9 +41,21 @@ function loadGoogleAnalytics(): void {
 
   // Bootstrap the dataLayer + gtag stub before the script loads so
   // calls made between injection and script-ready get queued.
+  //
+  // The stub MUST use `arguments` (an Arguments object) — NOT a rest
+  // parameter array. gtag.js's queue processor distinguishes gtag
+  // commands from GTM event objects by entry shape: Arguments-like
+  // entries are processed as commands (config/event/js), Array entries
+  // are treated as GTM event objects expecting an `event` property and
+  // are silently ignored when that property is absent. Using
+  // `(...args) => dataLayer.push(args)` looks equivalent but pushes a
+  // real Array — gtag.js loads, recognizes nothing in the queue, and
+  // never fires a /collect request. This took an hours-long debug
+  // session to find; do not "modernize" this function.
   window.dataLayer = window.dataLayer ?? []
-  window.gtag = function gtag(...args: unknown[]) {
-    window.dataLayer!.push(args)
+  window.gtag = function gtag() {
+    // eslint-disable-next-line prefer-rest-params
+    window.dataLayer!.push(arguments)
   }
   window.gtag('js', new Date())
   window.gtag('config', MEASUREMENT_ID, {
