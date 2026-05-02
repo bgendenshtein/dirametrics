@@ -12,11 +12,12 @@
  *   - track(name, params): no-op when consent.analytics !== true
  *     OR when GA4 isn't loaded yet. When both conditions hold,
  *     forwards to gtag('event', name, params).
- *
- * Placeholder measurement ID 'G-NX5Z6NJBMW' — replace with the
- * real ID before launch. The loader functions normally with the
- * placeholder; GA4 just rejects events to a non-existent property
- * (visible in DevTools Network as 4xx; doesn't break the app).
+ *   - On consent-accept the loader fires a one-shot page_view for
+ *     the current URL ("seed event") so the freshly-loaded GA4
+ *     session has its first hit. Without this, a visitor who
+ *     accepts on the landing page and stays there never produces
+ *     a page_view (RouteTracker fires only on route *changes* and
+ *     send_page_view is disabled in config to avoid double-counting).
  */
 
 import { addConsentListener, getConsent, type ConsentState } from './consent'
@@ -53,6 +54,19 @@ function loadGoogleAnalytics(): void {
     // anonymize_ip is implicit in GA4 (Google strips the last octet
     // automatically). No need to set it explicitly, but documenting
     // here so a future reader doesn't try to add it.
+  })
+
+  // Seed the session: fire an immediate page_view for the page that
+  // was already loaded when consent was granted. RouteTracker fires
+  // page_view on route *changes*, but a fresh visitor who accepts
+  // cookies on the landing page never triggers a route change — so
+  // without this seed call GA4 sees the user but never gets their
+  // first page_view, and the session shows zero hits in Realtime.
+  // Mirrors the manual page_view shape we send from trackPageView.
+  window.gtag('event', 'page_view', {
+    page_path: window.location.pathname + window.location.search,
+    page_title: document.title,
+    page_location: window.location.href,
   })
 
   const s = document.createElement('script')
