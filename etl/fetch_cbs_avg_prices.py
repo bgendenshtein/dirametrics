@@ -96,13 +96,46 @@ AFFORDABILITY INDEX — computed after the price series is built.
   Coverage: 2008-01 (limited by BoI 7Y yield start) through latest
   monthly mortgage observation.
 
-DB CONSTRAINT REMINDER: cbs_series_topic_valid must include both
-new topic strings ('avg_apartment_price', 'affordability_index')
-before this script's upsert succeeds. See etl/NOTES_CBS.md.
+HOUSING ALTERNATIVE RATIO — third derived series, also computed here.
 
-Failure handling: each step (price fetch / splice / affordability)
-runs independently. If price fetch fails the affordability calc is
-skipped; if affordability fails the price rows still upsert.
+  Compares the cost of renting vs. buying as a quarterly cash-flow
+  ratio:
+
+      housing_alternative_ratio = (avg_monthly_rent / monthly_mortgage_payment) × 100
+
+  Inputs (all quarterly aligned at quarter-start):
+    - avg_monthly_rent: arithmetic mean of cbs_rent_prices for
+      geography_type='national', geography='national',
+      room_group IN ('3.5-4', '4.5-6'). The two larger room-group
+      categories are averaged to match the typical size of new
+      apartments in the spliced apartment-price series — using
+      the 'all' bucket would mix in 1-2 and 2.5-3 rentals and
+      drag the rent down, making the ratio look artificially low.
+      The table stores quarterly only (no frequency column).
+      Ingested separately by etl/ingest_rent_data.py.
+    - monthly_mortgage_payment: same standard amortization formula
+      used for affordability (70% LTV, 25-year, non-indexed fixed
+      rate). Mortgage rate sourced from boi_mortgage_rates at the
+      first month of each quarter.
+
+  Interpretation: <100% means renting is cheaper than the mortgage
+  cash flow on a comparable apartment; >100% means renting is more
+  expensive. Pure cash-flow comparison — does not account for
+  property tax, maintenance, foregone interest on down payment,
+  capital appreciation, or eventual ownership.
+
+  Storage: rows in cbs_series with topic='housing_alternative_ratio',
+  district='national', frequency='quarterly'. Coverage 2017+ (limited
+  by rent data start).
+
+DB CONSTRAINT REMINDER: cbs_series_topic_valid must include all four
+topic strings ('avg_apartment_price', 'affordability_index',
+'housing_alternative_ratio'; the rent prices live in their own
+table cbs_rent_prices, no constraint there). See etl/NOTES_CBS.md.
+
+Failure handling: each step (price fetch / splice / affordability /
+housing alternative) runs independently. If one fails, the others
+still upsert.
 """
 
 from __future__ import annotations
@@ -146,6 +179,7 @@ LEGACY_PRICE_SUBJECT = '7'      # מחירים ממוצעים של דירות ב
 
 PRICE_NAME = 'מחיר דירה ממוצעת'
 AFFORDABILITY_NAME = 'מדד אפורדביליות'
+HOUSING_ALT_NAME = 'יחס שכירות למשכנתא'
 
 # Mortgage parameters for the affordability calculation.
 LTV = 0.70                       # 70% loan-to-value
@@ -408,6 +442,33 @@ def to_affordability_db_rows(
     return rows
 
 
+def to_housing_alternative_db_rows(
+    period_to_value: dict[str, float],
+) -> list[dict]:
+    """Build cbs_series rows for the housing_alternative_ratio topic.
+    Quarterly. Always derived (depends on rent + price + rate);
+    never estimated (no pre-2017 imputation — no rent data exists
+    that far back)."""
+    if not period_to_value:
+        return []
+    sorted_recent_first = sorted(period_to_value.keys(), reverse=True)
+    rows: list[dict] = []
+    for idx, p in enumerate(sorted_recent_first):
+        rows.append({
+            'series_id': 'DERIVED',
+            'series_name': HOUSING_ALT_NAME,
+            'topic': 'housing_alternative_ratio',
+            'district': 'national',
+            'frequency': 'quarterly',
+            'time_period': parse_period(p).isoformat(),
+            'value': period_to_value[p],
+            'is_provisional': idx < PROVISIONAL_TAIL,
+            'is_derived': True,
+            'is_estimated': False,
+        })
+    return rows
+
+
 # --- Reading existing data from supabase ---
 
 def fetch_topic_series(
@@ -462,6 +523,47 @@ def fetch_mortgage_rates(client: Client) -> dict[str, float]:
         rows = result.data or []
         for r in rows:
             out[str(r['date'])[:10]] = float(r['rate'])
+        if len(rows) < chunk:
+            break
+        offset += chunk
+    return out
+
+
+def fetch_national_quarterly_rent(
+    client: Client, room_group: str,
+) -> dict[str, float]:
+    """Read national rent prices in NIS for the given room_group
+    from cbs_rent_prices as {YYYY-MM-DD: rent_nis}. Populated by
+    etl/ingest_rent_data.py (one-time / on-demand from manually
+    extracted CBS PDFs).
+
+    The rent table is keyed on (geography_type, geography,
+    room_group, time_period); this fetcher pins the first two to
+    'national' and the third to the caller-specified group. All
+    persisted rows are quarterly — the table does not store
+    annuals.
+
+    Used by the registry's avg-rent-price series with
+    room_group='all' (display headline), and by the housing-
+    alternative-ratio computation with room_group='3.5-4' and
+    '4.5-6' which are averaged to match new-apartment size."""
+    out: dict[str, float] = {}
+    offset = 0
+    chunk = 1000
+    while True:
+        result = (
+            client.table('cbs_rent_prices')
+            .select('time_period, value')
+            .eq('geography_type', 'national')
+            .eq('geography', 'national')
+            .eq('room_group', room_group)
+            .order('time_period')
+            .range(offset, offset + chunk - 1)
+            .execute()
+        )
+        rows = result.data or []
+        for r in rows:
+            out[str(r['time_period'])[:10]] = float(r['value'])
         if len(rows) < chunk:
             break
         offset += chunk
@@ -696,6 +798,67 @@ def compute_affordability(
     return out
 
 
+def compute_housing_alternative_ratio(
+    prices_quarterly: dict[str, float],
+    rates_monthly: dict[str, float],
+    rents_3_4: dict[str, float],
+    rents_4_6: dict[str, float],
+) -> dict[str, float]:
+    """Compute the rent-to-mortgage cash-flow ratio per quarter.
+
+    For each quarter where BOTH rent series and price are available,
+    locate the mortgage rate for the FIRST month of that quarter
+    (Jan/Apr/Jul/Oct), compute the standard 70% LTV / 25-year
+    monthly mortgage payment, and divide the (3.5-4 + 4.5-6)/2 rent
+    average by that payment.
+
+    The rent inputs are the two larger room-group categories — not
+    the 'all' bucket — to match the typical size of new apartments
+    in the spliced apartment-price series. Using 'all' would mix
+    in 1-2 and 2.5-3 rentals and drag the rent down by ~25-30%,
+    artificially deflating the ratio.
+
+    Result is in percent (×100): values <100 mean renting is
+    cheaper, >100 means renting costs more than the mortgage cash
+    flow. Pure cash-flow comparison — see methodology page for
+    the explicit caveats (no property tax, maintenance, foregone
+    interest on down payment, capital appreciation, ownership).
+
+    Skips quarters where any input is missing — partial coverage
+    (one rent group present, the other not) is dropped rather
+    than computed with a half-mean. Skips count is logged but not
+    warned per-row."""
+    out: dict[str, float] = {}
+    skipped_no_rate = 0
+    skipped_no_price = 0
+    skipped_partial_rent = 0
+    quarters = sorted(set(rents_3_4) | set(rents_4_6))
+    for q_key in quarters:
+        if q_key not in rents_3_4 or q_key not in rents_4_6:
+            skipped_partial_rent += 1
+            continue
+        if q_key not in prices_quarterly:
+            skipped_no_price += 1
+            continue
+        if q_key not in rates_monthly:
+            skipped_no_rate += 1
+            continue
+        avg_rent = (rents_3_4[q_key] + rents_4_6[q_key]) / 2.0
+        price = prices_quarterly[q_key]
+        rate = rates_monthly[q_key]
+        monthly_payment = compute_monthly_payment(price, rate)
+        if monthly_payment <= 0:
+            continue
+        out[q_key] = avg_rent / monthly_payment * 100.0
+    log.info(
+        'housing alternative ratio: %d quarters computed (skipped %d for '
+        'missing price, %d for missing rate at quarter start, %d for '
+        'partial rent coverage [only one of 3.5-4 / 4.5-6])',
+        len(out), skipped_no_price, skipped_no_rate, skipped_partial_rent,
+    )
+    return out
+
+
 # --- Upsert ---
 
 def upsert_rows(client: Client, rows: list[dict]) -> int:
@@ -834,8 +997,47 @@ def main() -> int:
         log.exception('affordability computation failed: %s', exc)
         failures.append('affordability_index')
 
-    # 3. Upsert everything
-    all_rows = price_rows + affordability_rows
+    # 3. Compute housing_alternative_ratio (rent ÷ mortgage payment).
+    # Independent of affordability — runs even if (2) failed, since
+    # only price + rate + rent are needed (no wage). Stays empty if
+    # the rent table hasn't been ingested yet (`ingest_rent_data.py`).
+    # Two rent room-groups are fetched separately and averaged inside
+    # the compute function — see its docstring for why we don't use
+    # 'all'.
+    housing_alt_rows: list[dict] = []
+    try:
+        rents_3_4 = fetch_national_quarterly_rent(client, '3.5-4')
+        rents_4_6 = fetch_national_quarterly_rent(client, '4.5-6')
+        log.info(
+            'housing-alt inputs: rents 3.5-4=%d quarters, rents 4.5-6=%d quarters',
+            len(rents_3_4), len(rents_4_6),
+        )
+        if rents_3_4 and rents_4_6 and prices_for_calc and rates:
+            ratio = compute_housing_alternative_ratio(
+                prices_for_calc, rates, rents_3_4, rents_4_6,
+            )
+            housing_alt_rows = to_housing_alternative_db_rows(ratio)
+            log.info('housing_alternative_ratio rows: %d', len(housing_alt_rows))
+        else:
+            log.warning(
+                'housing_alternative_ratio skipped: rents_3_4=%d, '
+                'rents_4_6=%d, prices=%d, rates=%d',
+                len(rents_3_4), len(rents_4_6), len(prices_for_calc), len(rates),
+            )
+            if not rents_3_4 or not rents_4_6:
+                # Not a hard failure — the rent table simply isn't
+                # (fully) ingested yet. Don't append to `failures`
+                # for that case; ETL exits 0 if everything else
+                # worked.
+                pass
+            else:
+                failures.append('housing_alternative_ratio')
+    except Exception as exc:
+        log.exception('housing_alternative_ratio computation failed: %s', exc)
+        failures.append('housing_alternative_ratio')
+
+    # 4. Upsert everything
+    all_rows = price_rows + affordability_rows + housing_alt_rows
     if not all_rows:
         log.error('no rows to upsert; failures=%s', failures)
         return 1
@@ -847,8 +1049,10 @@ def main() -> int:
         return 1
 
     log.info(
-        'Done. Upserted %d rows (%d prices + %d affordability); failures=%s',
-        sent, len(price_rows), len(affordability_rows), failures or '—',
+        'Done. Upserted %d rows (%d prices + %d affordability + %d housing-alt); '
+        'failures=%s',
+        sent, len(price_rows), len(affordability_rows), len(housing_alt_rows),
+        failures or '—',
     )
     return 1 if failures else 0
 

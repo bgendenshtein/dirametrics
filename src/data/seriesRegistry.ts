@@ -203,6 +203,7 @@ export function getLeafEntry(id: string): RegistryLeafEntry | undefined {
 interface CbsSeriesRow { time_period: string; value: number; is_estimated?: boolean | null }
 interface CbsPriceRow  { date: string; value: number }
 interface BoiRateRow   { date: string; rate: number }
+interface CbsRentRow   { time_period: string; value: number }
 
 async function fetchCbsSeries(
   topic: string,
@@ -222,6 +223,34 @@ async function fetchCbsSeries(
     date: new Date(r.time_period + 'T00:00:00.000Z'),
     value: Number(r.value),
     isEstimated: r.is_estimated === true,
+  }))
+}
+
+/** Read average rent in NIS from cbs_rent_prices. The table has a
+ * compound key (geography_type, geography, room_group, time_period);
+ * this fetcher pins the first three so registry entries can choose
+ * what slice they expose. The `room_group='all'` +
+ * `geography='national'` slice is the headline series; future
+ * registry entries may expose district / room-group breakdowns.
+ * All persisted rows are quarterly (the table does not store
+ * annuals — they're recomputed from quarters when needed). */
+async function fetchCbsRentPrices(
+  geographyType: 'national' | 'district' | 'city',
+  geography: string,
+  roomGroup: 'all' | '1-2' | '2.5-3' | '3.5-4' | '4.5-6',
+): Promise<SeriesPoint[]> {
+  const { data, error } = await supabase
+    .from('cbs_rent_prices')
+    .select('time_period, value')
+    .eq('geography_type', geographyType)
+    .eq('geography', geography)
+    .eq('room_group', roomGroup)
+    .order('time_period', { ascending: true })
+    .limit(2000)
+  if (error) throw new Error(error.message)
+  return ((data ?? []) as CbsRentRow[]).map((r) => ({
+    date: new Date(r.time_period + 'T00:00:00.000Z'),
+    value: Number(r.value),
   }))
 }
 
@@ -587,6 +616,43 @@ export const SERIES_REGISTRY: RegistryEntry[] = [
     precision: 1,
     aggregation: 'average',
     fetch: () => fetchCbsSeries('affordability_index', 'national', 'monthly'),
+  },
+
+  // Average rent (NIS) — quarterly. National / all-rooms slice from
+  // cbs_rent_prices, populated one-time / on-demand by
+  // etl/ingest_rent_data.py from manually extracted CBS PDFs.
+  // Coverage: 2017+ (limited by available PDF set). family='currency'
+  // keeps it on its own Y-axis like avg_apartment_price; aggregation
+  // 'last' since the upstream is quarterly already.
+  {
+    id: 'avg-rent-price',
+    name: 'מחיר שכירות ממוצעת',
+    category: 'prices-general',
+    family: 'currency',
+    defaultType: 'line',
+    unit: ' ₪',
+    precision: 0,
+    thousands: true,
+    aggregation: 'last',
+    fetch: () => fetchCbsRentPrices('national', 'national', 'all'),
+  },
+
+  // Housing alternative ratio — rent ÷ mortgage cash flow, in
+  // percent. <100 means renting is cheaper than the equivalent
+  // mortgage payment; >100 means renting costs more. Pure cash-flow
+  // comparison (no property tax, maintenance, foregone interest on
+  // down payment, capital appreciation, ownership). See methodology
+  // page for the explicit caveats.
+  {
+    id: 'housing-alternative-ratio',
+    name: 'יחס שכירות למשכנתא',
+    category: 'prices-general',
+    family: 'pct',
+    defaultType: 'line',
+    unit: '%',
+    precision: 1,
+    aggregation: 'average',
+    fetch: () => fetchCbsSeries('housing_alternative_ratio', 'national', 'quarterly'),
   },
 
   // 5. מחירים לפי מחוז — one entry per district. Each is its own

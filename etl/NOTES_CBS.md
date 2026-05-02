@@ -437,6 +437,7 @@ For quick reference (mapping verified 2026-04-25):
 | `average_wage`         | 33,1,2 + 33,4,1 (SPLICED) | monthly | national |
 | `avg_apartment_price`  | 51000 + 20000 (SPLICED, BoardsGen) | quarterly | national |
 | `affordability_index`  | DERIVED                   | monthly | national |
+| `housing_alternative_ratio` | DERIVED              | quarterly | national |
 
 Series IDs are listed in `TOPICS` in `etl/fetch_cbs_series.py` for
 construction/sales topics, and in module-level constants in
@@ -478,6 +479,7 @@ this list also serves as a record of what's currently allowed):
 - `average_wage` (2026-05-01, with the מאקרו category)
 - `avg_apartment_price` (2026-05-01, with the affordability work)
 - `affordability_index` (2026-05-01, with the affordability work)
+- `housing_alternative_ratio` (2026-05-01, with the rent ingestion)
 
 If you ever see an upsert fail with a Postgres `23514` /
 "new row for relation cbs_series violates check constraint
@@ -571,3 +573,104 @@ from `שקלים חדשים` (raw NIS) to `אלפי שקלים חדשים` (thou
 NIS) at year 2003 — purely a CBS display-convention change, not a
 unit reform. The ETL normalizes to raw NIS at parse time so all
 years end up on the same scale before splicing.
+
+## Average rent prices — `cbs_rent_prices` table (PDF-extracted)
+
+Average free-market rent levels in NIS are NOT exposed by any CBS
+API surface (verified — neither time-series at `apis.cbs.gov.il`,
+the price-index API at `api.cbs.gov.il/index`, nor the boards
+generator at `boardsgenerator.cbs.gov.il`). The only series the
+APIs offer is the rent INDEX (120460), which is a level-normalized
+indicator, not absolute NIS values.
+
+CBS publishes absolute average rent only as **PDF tables in
+quarterly publications**. To get the data into the database we
+maintain a manual extraction pipeline:
+
+  1. Download the source PDFs from CBS publications.
+  2. Hand-extract the tables into a structured Excel workbook
+     (`etl/data/rent_data_2017_2025.xlsx`) with a `Tidy_Data`
+     sheet in long format: Geography Type, Geography, Room Group,
+     Year, Period, Average Rent (NIS).
+  3. Spot-verify a sample of the extracted values against the
+     source PDFs (10/10 spot-checks passed for the 2025-2024.pdf
+     batch).
+  4. Run `etl/ingest_rent_data.py` once per Excel-update to upsert
+     into `cbs_rent_prices`. Idempotent — safe to re-run when the
+     Excel is rebuilt.
+
+The `cbs_rent_prices` table is independent of `cbs_series` because
+its schema differs (compound key on geography_type + geography +
+room_group + time_period, not the topic + district + frequency +
+time_period of `cbs_series`). It also stores QUARTERLY ROWS ONLY —
+no `frequency` column. Annual averages can be recomputed from the
+4 quarters of any year on demand; persisting them risks divergence
+(e.g., the 2021 source PDF omitted annuals so the Excel had gaps
+that wouldn't exist for a computed annual).
+
+```sql
+CREATE TABLE cbs_rent_prices (
+  id BIGSERIAL PRIMARY KEY,
+  geography_type TEXT NOT NULL CHECK (geography_type IN ('national', 'district', 'city')),
+  geography TEXT NOT NULL,
+  room_group TEXT NOT NULL CHECK (room_group IN ('all', '1-2', '2.5-3', '3.5-4', '4.5-6')),
+  time_period DATE NOT NULL,
+  value NUMERIC NOT NULL,
+  source_pdf TEXT,
+  is_estimated BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (geography_type, geography, room_group, time_period)
+);
+```
+
+(The unique constraint provides the lookup index for free — no
+separate `idx_cbs_rent_prices_lookup` needed.)
+
+Geography keys: `'national'` for the country aggregate; for
+districts we use the same English snake_case keys as elsewhere in
+the project (`'south'`, `'haifa'`, `'jerusalem'`, `'north'`,
+`'center'`, `'tel_aviv'`); cities keep their Hebrew names (no
+project-wide English mapping for cities exists).
+
+Period mapping in the ingestor:
+  - `'Annual'` → SKIPPED (annuals are recomputed from quarters
+    when needed; not persisted).
+  - `'Q1'`/`'Q2'`/`'Q3'`/`'Q4'` → `time_period=YYYY-{01,04,07,10}-01`
+
+`source_pdf` attribution is parsed from the README sheet of the
+workbook at runtime — no hard-coded year→PDF map in code, so when
+the Excel is regenerated the attribution stays in sync.
+
+Room-group normalization in the ingestor handles two known data-
+hygiene issues:
+
+  1. Unicode dash variants (en-dash, em-dash, figure-dash, etc.)
+     are folded to ASCII hyphen-minus before matching. Insurance
+     against future PDFs that preserve typographic dashes.
+  2. Specific known PDF-tokenization split-error: the cell '4.5-6'
+     appears in the 2017-2019 Be'er Sheva block as '- 6' (the
+     prefix '4.5' having leaked into a value cell). The ingestor
+     maps '- 6' → '4.5-6' and logs each occurrence so future
+     re-extractions can be audited.
+
+Sanity floor (`SANITY_FLOOR_NIS = 100`): the ingestor rejects rent
+values below 100 NIS as data-quality artifacts. Real average rents
+for any city/room-group combination are in the low thousands.
+Catches values like the leaked-label '4.5' that snuck in via PDF
+tokenization (see (2) above) — drops the row rather than fabricating
+a replacement from the annual.
+
+Headline series exposed in the registry:
+  - `(geography_type='national', geography='national',
+     room_group='all')` is the headline quarterly all-rooms national
+    rent series rendered as "מחיר שכירות ממוצעת" in the picker.
+  - The `housing_alternative_ratio` topic in `cbs_series` is
+    derived from the AVERAGE of the `room_group='3.5-4'` and
+    `room_group='4.5-6'` slices (NOT the 'all' slice — see the
+    rationale in fetch_cbs_avg_prices.py's compute_housing_
+    alternative_ratio docstring), plus the spliced apartment
+    price and the BoI fixed mortgage rate.
+
+District / room-group / city slices are persisted but not yet
+surfaced in the registry — they're available for future expansion
+without needing additional ingestion work.
