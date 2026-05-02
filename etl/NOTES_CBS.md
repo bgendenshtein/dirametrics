@@ -443,6 +443,61 @@ Series IDs are listed in `TOPICS` in `etl/fetch_cbs_series.py` for
 construction/sales topics, and in module-level constants in
 `etl/fetch_cbs_macro.py` for the macro topics.
 
+## Checklist: adding a new Postgres table
+
+Standardized order for introducing a new table read by the
+frontend. Steps in this order; skipping any of them produces a
+distinct silent-failure mode that's hard to diagnose after the
+fact (we've now hit each at least once).
+
+1. **CREATE TABLE** with PRIMARY KEY + meaningful UNIQUE
+   constraint. The unique constraint name matters for ON CONFLICT
+   in the ETL — pick something predictable.
+
+2. **Add CHECK constraints** for any enum-like columns
+   (geography_type, frequency, room_group, etc.). Catches typo'd
+   values at write time rather than letting bad data pollute the
+   table. See `cbs_series_topic_valid` (below) and the inline
+   CHECKs on `cbs_rent_prices` for examples.
+
+3. **Add an RLS policy for public SELECT**. Supabase enables
+   RLS-by-default on new tables, and without an explicit policy
+   the anon role gets ZERO rows on every read — silently. The
+   request goes through and returns `data: []`, no error, no
+   warning. This bit us once on `cbs_rent_prices` (the picker
+   entry rendered, the click triggered the fetch, the fetch
+   returned `[]`, and the chart showed an empty state with no
+   indication of an auth problem).
+
+   Template (mirrors the existing `cbs_series` policy):
+
+   ```sql
+   CREATE POLICY "Public read access"
+   ON <table_name>
+   FOR SELECT
+   TO public
+   USING (true);
+   ```
+
+   For tables that should NOT be publicly readable, skip this
+   step deliberately and add an `authenticated`-role policy
+   instead. The default of "RLS enabled, no policy" is
+   essentially a deny-all and the safest place to land — but
+   it's also a footgun for tables intended to be public.
+
+4. **Wire up the ETL** that writes to the table. Use the unique
+   constraint columns as `on_conflict` for idempotent upserts.
+
+5. **Wire up the frontend registry**. Add a fetcher in
+   `src/data/seriesRegistry.ts` (alongside `fetchCbsSeries`,
+   `fetchCbsRentPrices`, `fetchPriceIndex`, `fetchBoiRate`) and
+   one or more `RegistryEntry` records that reference it.
+
+If a new picker entry produces no visible network activity
+on click, **step 3 is the first thing to check** — the symptom
+is indistinguishable from a missing entry without DB-side
+inspection.
+
 ## DB constraint: cbs_series_topic_valid
 
 The `cbs_series.topic` column has a CHECK constraint
